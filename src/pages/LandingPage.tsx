@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import {
@@ -149,24 +149,38 @@ export const LandingPage: React.FC = () => {
   const [mapUsageCount, setMapUsageCount] = useState<number>(15842);
   const [availablePlotsCount, setAvailablePlotsCount] = useState<number>(52);
 
-  React.useEffect(() => {
+  // Search dropdown auto-suggest state
+  const [allBurials, setAllBurials] = useState<any[]>([]);
+  const [allPlots, setAllPlots] = useState<any[]>([]);
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
     const loadUsage = async () => {
       const count = await getMapUsageCount();
       setMapUsageCount(count);
     };
     loadUsage();
 
-    const fetchAvailablePlots = async () => {
+    const fetchPlotsAndBurials = async () => {
       try {
-        const res = await apiClient.get('/plots', { params: { status: 'available', limit: 100 } });
-        if (res.data?.success && res.data?.pagination?.total !== undefined) {
-          setAvailablePlotsCount(res.data.pagination.total);
+        const [plotsRes, burialsRes] = await Promise.all([
+          apiClient.get('/plots', { params: { limit: 1000 } }),
+          apiClient.get('/burials').catch(() => ({ data: { success: false, data: [] } })),
+        ]);
+        if (plotsRes.data?.success) {
+          setAllPlots(plotsRes.data.data);
+          const avail = plotsRes.data.data.filter((p: any) => p.status === 'available').length;
+          setAvailablePlotsCount(avail);
+        }
+        if (burialsRes.data?.success) {
+          setAllBurials(burialsRes.data.data);
         }
       } catch (err) {
-        console.warn('Failed to fetch available plots count:', err);
+        console.warn('Failed to fetch plots or burials:', err);
       }
     };
-    fetchAvailablePlots();
+    fetchPlotsAndBurials();
 
     const handleUpdate = (e: any) => {
       if (e.detail && typeof e.detail === 'number') {
@@ -177,6 +191,81 @@ export const LandingPage: React.FC = () => {
     return () => window.removeEventListener('himlayan_map_usage_updated', handleUpdate);
   }, []);
 
+  // Close search dropdown on click outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setIsDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  // Search suggestions list
+  const searchSuggestions = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return [];
+
+    const results: Array<{
+      id: string;
+      name: string;
+      plotNumber: string;
+      section: string;
+      type: 'deceased' | 'plot';
+    }> = [];
+    const seenPlots = new Set<string>();
+
+    allBurials.forEach((b) => {
+      if (b.deceased_name && b.deceased_name.toLowerCase().includes(q)) {
+        const p = allPlots.find((plt) => plt.id === b.plot_id);
+        if (p) {
+          seenPlots.add(p.id);
+          results.push({
+            id: `burial-${b.id}`,
+            name: b.deceased_name,
+            plotNumber: p.plot_number,
+            section: p.section,
+            type: 'deceased',
+          });
+        }
+      }
+    });
+
+    allPlots.forEach((p) => {
+      if (seenPlots.has(p.id)) return;
+      const burialRecord = allBurials.find((b) => b.plot_id === p.id && b.deceased_name);
+      const decName = p.deceased_name || burialRecord?.deceased_name;
+      const inqName = p.inquirer_name;
+      const pNum = p.plot_number;
+      const sec = p.section;
+
+      if (
+        (decName && decName.toLowerCase().includes(q)) ||
+        (inqName && inqName.toLowerCase().includes(q)) ||
+        (pNum && pNum.toLowerCase().includes(q)) ||
+        (sec && sec.toLowerCase().includes(q))
+      ) {
+        results.push({
+          id: `plot-${p.id}`,
+          name: decName || (inqName ? `${inqName} (Reserved)` : `Grave Lot #${pNum}`),
+          plotNumber: pNum,
+          section: sec,
+          type: decName ? 'deceased' : 'plot',
+        });
+      }
+    });
+
+    return results.slice(0, 8);
+  }, [searchQuery, allBurials, allPlots]);
+
+  const handleSelectSuggestion = async (name: string) => {
+    setSearchQuery(name);
+    setIsDropdownOpen(false);
+    await incrementMapUsageCount();
+    navigate(`/map?search=${encodeURIComponent(name)}`);
+  };
+
   const handleNavigateToMap = async () => {
     await incrementMapUsageCount();
     navigate('/map');
@@ -186,9 +275,9 @@ export const LandingPage: React.FC = () => {
     e.preventDefault();
     await incrementMapUsageCount();
     if (searchQuery.trim()) {
-      navigate(`/lots?search=${encodeURIComponent(searchQuery.trim())}`);
+      navigate(`/map?search=${encodeURIComponent(searchQuery.trim())}`);
     } else {
-      navigate('/lots');
+      navigate('/map');
     }
   };
 
@@ -202,16 +291,18 @@ export const LandingPage: React.FC = () => {
       <Navbar />
 
       {/* SECTION 1: HERO */}
-      <section className="relative min-h-[90vh] sm:min-h-[100vh] w-full overflow-hidden bg-emerald-950 flex flex-col items-center justify-start pt-56 sm:pt-64 md:pt-76 pb-16">
+      <section className="relative z-20 min-h-[90vh] sm:min-h-[100vh] w-full bg-emerald-950 flex flex-col items-center justify-start pt-56 sm:pt-64 md:pt-76 pb-16">
         {/* Backdrop Image Layer - Clean backdrop image with Himlayan title script */}
-        <div
-          className="absolute inset-0 bg-cover bg-top bg-no-repeat"
-          style={{
-            backgroundImage: `url(${himlayanBackdropImg})`,
-          }}
-        />
-        {/* Subtle bottom gradient to ensure text & controls contrast gracefully over lower background */}
-        <div className="absolute inset-0 bg-gradient-to-b from-transparent via-emerald-950/20 to-slate-950/90" />
+        <div className="absolute inset-0 overflow-hidden">
+          <div
+            className="absolute inset-0 bg-cover bg-top bg-no-repeat"
+            style={{
+              backgroundImage: `url(${himlayanBackdropImg})`,
+            }}
+          />
+          {/* Subtle bottom gradient to ensure text & controls contrast gracefully over lower background */}
+          <div className="absolute inset-0 bg-gradient-to-b from-transparent via-emerald-950/20 to-slate-950/90" />
+        </div>
 
         {/* Hero Content - Positioned directly below the Himlayan Calligraphy */}
         <div className="relative z-10 max-w-4xl mx-auto px-4 text-center flex flex-col items-center justify-center mt-2 sm:mt-4 md:mt-6">
@@ -232,29 +323,74 @@ export const LandingPage: React.FC = () => {
             Browse available memorial lots, explore interactive turn-by-turn pathfinding directions, submit burial inquiries, and access administrative records with dignity.
           </motion.p>
 
-          {/* Search Bar Pill */}
-          <motion.form
-            onSubmit={handleSearchSubmit}
-            initial={{ filter: 'blur(10px)', opacity: 0, y: 20 }}
-            animate={{ filter: 'blur(0px)', opacity: 1, y: 0 }}
-            transition={{ duration: 0.8, delay: 0.7 }}
-            className="w-full max-w-xl bg-white/95 backdrop-blur-md rounded-full px-2 py-2 flex items-center gap-2 shadow-2xl border border-white/40 mb-8"
-          >
-            <Search className="w-5 h-5 text-emerald-800 ml-3 shrink-0" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Find a love one..."
-              className="w-full bg-transparent text-slate-900 placeholder-slate-500 text-sm font-body focus:outline-none px-2 font-medium"
-            />
-            <button
-              type="submit"
-              className="bg-emerald-700 hover:bg-emerald-800 text-white rounded-full p-3 font-semibold shadow-md transition-transform hover:scale-105 shrink-0 cursor-pointer"
+          {/* Search Bar Pill with Dropdown Auto-Suggest */}
+          <div className="w-full max-w-xl relative mb-8" ref={dropdownRef}>
+            <motion.form
+              onSubmit={handleSearchSubmit}
+              initial={{ filter: 'blur(10px)', opacity: 0, y: 20 }}
+              animate={{ filter: 'blur(0px)', opacity: 1, y: 0 }}
+              transition={{ duration: 0.8, delay: 0.7 }}
+              className="w-full bg-white/95 backdrop-blur-md rounded-full px-2 py-2 flex items-center gap-2 shadow-2xl border border-white/40"
             >
-              <ArrowRight className="w-4 h-4" />
-            </button>
-          </motion.form>
+              <Search className="w-5 h-5 text-emerald-800 ml-3 shrink-0" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => {
+                  setSearchQuery(e.target.value);
+                  setIsDropdownOpen(true);
+                }}
+                onFocus={() => setIsDropdownOpen(true)}
+                placeholder="Find a loved one (e.g. Maria, Santos)..."
+                className="w-full bg-transparent text-slate-900 placeholder-slate-500 text-sm font-body focus:outline-none px-2 font-medium"
+              />
+              <button
+                type="submit"
+                className="bg-emerald-700 hover:bg-emerald-800 text-white rounded-full p-3 font-semibold shadow-md transition-transform hover:scale-105 shrink-0 cursor-pointer"
+              >
+                <ArrowRight className="w-4 h-4" />
+              </button>
+            </motion.form>
+
+            {/* Auto-suggest Dropdown Filter */}
+            {isDropdownOpen && searchQuery.trim() !== '' && (
+              <div className="absolute left-0 right-0 top-full mt-2 bg-white border border-slate-200/90 rounded-2xl shadow-2xl z-50 overflow-y-auto max-h-64 divide-y divide-slate-100 text-left animate-fadeIn">
+                {searchSuggestions.length > 0 ? (
+                  searchSuggestions.map((item) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => handleSelectSuggestion(item.name)}
+                      className="w-full px-4 py-3 hover:bg-emerald-50/70 flex items-center justify-between transition-colors group cursor-pointer"
+                    >
+                      <div>
+                        <div className="text-xs font-bold text-slate-900 group-hover:text-emerald-800 flex items-center gap-2">
+                          <span>{item.name}</span>
+                          {item.type === 'deceased' && (
+                            <span className="text-[9px] bg-emerald-100 text-emerald-800 border border-emerald-300 px-1.5 py-0.2 rounded font-semibold uppercase">
+                              Deceased
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[11px] text-slate-500 mt-0.5 font-medium flex items-center gap-1">
+                          <MapPin className="w-3 h-3 text-emerald-600 inline shrink-0" />
+                          <span>Himlayan Memorial Park • Section {item.section}</span>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1 text-xs font-semibold text-emerald-700 group-hover:text-emerald-800">
+                        <span>Locate on Map</span>
+                        <ArrowRight className="w-3.5 h-3.5 transition-transform group-hover:translate-x-1" />
+                      </div>
+                    </button>
+                  ))
+                ) : (
+                  <div className="p-4 text-center text-xs text-slate-500 italic">
+                    No matching records found for "{searchQuery}". Try "Maria", "Santos", or "Section A".
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
 
           {/* Quick Nav Pills */}
           <motion.div

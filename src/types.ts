@@ -2,7 +2,7 @@ export type UserRole = 'super_admin' | 'rcc' | 'engineer' | 'staff';
 
 export type PlotStatus = 'available' | 'reserved' | 'occupied' | 'full';
 
-export type LotType = 'single' | 'family' | 'apartment' | 'path' | 'border';
+export type LotType = 'single' | 'family' | 'apartment' | 'path' | 'border' | 'entrance';
 
 export type ContractType = 'new' | 'renewal';
 
@@ -28,6 +28,7 @@ export interface User {
   department?: string;
   phone?: string;
   address?: string;
+  is_new_account?: boolean;
   createdAt?: string;
   updatedAt?: string;
 }

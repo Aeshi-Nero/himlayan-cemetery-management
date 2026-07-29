@@ -307,6 +307,97 @@ const burialsStore: Burial[] = [
     notes: 'Funeral service held at Central Chapel. Full military honor detail.',
     createdAt: '2026-01-15T11:00:00Z',
   },
+  {
+    id: 'bur-2',
+    plot_id: 'plot-12',
+    contract_id: 'ctr-1',
+    deceased_name: 'Maria Clara Santos',
+    date_of_birth: '1950-08-22',
+    date_of_death: '2025-11-04',
+    burial_date: '2025-11-12T09:30:00',
+    burial_status: 'completed',
+    scheduled_by: 'usr-2',
+    notes: 'Lawn Lot A-12 resting place, floral garden view.',
+    createdAt: '2025-11-05T10:00:00Z',
+  },
+  {
+    id: 'bur-3',
+    plot_id: 'plot-8',
+    contract_id: 'ctr-2',
+    deceased_name: 'Maria Theresa Dela Cruz',
+    date_of_birth: '1958-03-15',
+    date_of_death: '2026-02-14',
+    burial_date: '2026-02-20T14:00:00',
+    burial_status: 'completed',
+    scheduled_by: 'usr-2',
+    notes: 'Family Estate Mausoleum B-08 internment.',
+    createdAt: '2026-02-15T08:00:00Z',
+  },
+  {
+    id: 'bur-4',
+    plot_id: 'plot-16',
+    contract_id: 'ctr-1',
+    deceased_name: 'Maria Elena Aquino',
+    date_of_birth: '1962-07-09',
+    date_of_death: '2025-09-18',
+    burial_date: '2025-09-25T11:00:00',
+    burial_status: 'completed',
+    scheduled_by: 'usr-2',
+    notes: 'Garden Terraces C-16 memorial garden plot.',
+    createdAt: '2025-09-20T09:00:00Z',
+  },
+  {
+    id: 'bur-5',
+    plot_id: 'plot-20',
+    contract_id: 'ctr-2',
+    deceased_name: 'Juan Dela Cruz Jr.',
+    date_of_birth: '1938-11-30',
+    date_of_death: '2025-12-01',
+    burial_date: '2025-12-08T10:30:00',
+    burial_status: 'completed',
+    scheduled_by: 'usr-2',
+    notes: 'Lawn Lot Section D-20 family plot.',
+    createdAt: '2025-12-02T14:00:00Z',
+  },
+  {
+    id: 'bur-6',
+    plot_id: 'plot-24',
+    contract_id: 'ctr-1',
+    deceased_name: 'Jose Rizal Santos',
+    date_of_birth: '1955-06-19',
+    date_of_death: '2026-03-01',
+    burial_date: '2026-03-07T09:00:00',
+    burial_status: 'completed',
+    scheduled_by: 'usr-2',
+    notes: 'Mausoleum Family Crypt A-24.',
+    createdAt: '2026-03-02T10:00:00Z',
+  },
+  {
+    id: 'bur-7',
+    plot_id: 'plot-28',
+    contract_id: 'ctr-2',
+    deceased_name: 'Pedro Penduko',
+    date_of_birth: '1960-04-01',
+    date_of_death: '2026-04-10',
+    burial_date: '2026-04-16T14:30:00',
+    burial_status: 'completed',
+    scheduled_by: 'usr-2',
+    notes: 'Lawn Lot B-28 peaceful tree shade.',
+    createdAt: '2026-04-11T12:00:00Z',
+  },
+  {
+    id: 'bur-8',
+    plot_id: 'plot-32',
+    contract_id: 'ctr-1',
+    deceased_name: 'Antonio Luna',
+    date_of_birth: '1948-10-29',
+    date_of_death: '2026-05-05',
+    burial_date: '2026-05-12T10:00:00',
+    burial_status: 'completed',
+    scheduled_by: 'usr-2',
+    notes: 'Honor Guard Plaza C-32 interment.',
+    createdAt: '2026-05-06T08:30:00Z',
+  },
 ];
 
 const paymentsStore: Payment[] = [
@@ -336,14 +427,44 @@ const paymentsStore: Payment[] = [
 
 const activityLogsStore: ActivityLog[] = [
   {
-    id: 'act-1',
+    id: 'act-103',
+    user_id: 'usr-3',
+    user_email: 'engineer@himlayan.gov.ph',
+    action: 'USER_LOGIN',
+    module: 'Auth',
+    description: 'User engineer@himlayan.gov.ph (Cemetery Engineer) logged in successfully as ENGINEER.',
+    ip_address: '127.0.0.1',
+    createdAt: new Date(Date.now() - 15 * 60 * 1000).toISOString(),
+  },
+  {
+    id: 'act-102',
+    user_id: 'usr-2',
+    user_email: 'rcc@himlayan.gov.ph',
+    action: 'USER_LOGIN',
+    module: 'Auth',
+    description: 'User rcc@himlayan.gov.ph (RCC Memorial Clerk) logged in successfully as RCC.',
+    ip_address: '127.0.0.1',
+    createdAt: new Date(Date.now() - 45 * 60 * 1000).toISOString(),
+  },
+  {
+    id: 'act-101',
+    user_id: 'usr-1',
+    user_email: 'admin@himlayan.gov.ph',
+    action: 'USER_LOGIN',
+    module: 'Auth',
+    description: 'User admin@himlayan.gov.ph (Super Admin User) logged in successfully as SUPER_ADMIN.',
+    ip_address: '127.0.0.1',
+    createdAt: new Date(Date.now() - 120 * 60 * 1000).toISOString(),
+  },
+  {
+    id: 'act-100',
     user_id: 'usr-1',
     user_email: 'admin@himlayan.gov.ph',
     action: 'SYSTEM_INITIALIZATION',
     module: 'System',
     description: 'Himlayan Cemetery Management System loaded with 80 plots & pathfinding network.',
     ip_address: '127.0.0.1',
-    createdAt: new Date().toISOString(),
+    createdAt: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
   },
 ];
 
@@ -520,16 +641,22 @@ async function startServer() {
   };
 
   // Helper activity log logger
-  const logActivity = (action: string, module: string, description: string, req?: express.Request) => {
-    const user = req ? (req as any).user : undefined;
+  const logActivity = (
+    action: string,
+    module: string,
+    description: string,
+    req?: express.Request,
+    userOverride?: { id?: string; email?: string; role?: string; full_name?: string }
+  ) => {
+    const user = userOverride || (req ? (req as any).user : undefined);
     activityLogsStore.unshift({
-      id: `act-${Date.now()}`,
+      id: `act-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
       user_id: user?.id || undefined,
       user_email: user?.email || undefined,
       action,
       module,
       description,
-      ip_address: req ? req.ip || '127.0.0.1' : '127.0.0.1',
+      ip_address: req ? req.ip || (req.headers && (req.headers['x-forwarded-for'] as string)) || '127.0.0.1' : '127.0.0.1',
       createdAt: new Date().toISOString(),
     });
     if (activityLogsStore.length > 500) {
@@ -552,6 +679,7 @@ async function startServer() {
 
     const user = usersStore.find((u) => u.email.toLowerCase() === email.toLowerCase());
     if (!user || !user.is_active) {
+      logActivity('FAILED_LOGIN', 'Auth', `Failed login attempt for account email: ${email}`, req);
       res.status(401).json({ success: false, error: 'Invalid credentials or inactive account' });
       return;
     }
@@ -559,6 +687,7 @@ async function startServer() {
     // Compare password (accept Admin@123 for seeded or check hash)
     const valid = password === 'Admin@123' || bcrypt.compareSync(password, defaultPasswordHash);
     if (!valid) {
+      logActivity('FAILED_LOGIN', 'Auth', `Failed password attempt for account: ${user.email}`, req, user);
       res.status(401).json({ success: false, error: 'Invalid email or password' });
       return;
     }
@@ -567,7 +696,13 @@ async function startServer() {
     const accessToken = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: '15m' });
     const refreshToken = jwt.sign({ id: user.id }, JWT_REFRESH_SECRET, { expiresIn: '7d' });
 
-    logActivity('USER_LOGIN', 'Auth', `User ${user.email} logged in successfully as ${user.role}.`, req);
+    logActivity(
+      'USER_LOGIN',
+      'Auth',
+      `User ${user.email} (${user.full_name}) logged in successfully as ${user.role.toUpperCase()}.`,
+      req,
+      user
+    );
 
     res.json({
       success: true,
@@ -742,6 +877,12 @@ async function startServer() {
     plotsStore.splice(index, 1);
     logActivity('DELETE_PLOT', 'Plots', `Deleted plot ${deletedPlot.plot_number} from Section ${deletedPlot.section}`, req);
     res.json({ success: true, data: deletedPlot });
+  });
+
+  app.post('/api/engineer/reset', authenticateToken, (req, res) => {
+    plotsStore.length = 0;
+    logActivity('RESET_WORKSPACE', 'Engineer', 'Reset all plots and workspace data for fresh engineer account flow', req);
+    res.json({ success: true, message: 'All plots reset successfully' });
   });
 
   // Clients Endpoints
@@ -1056,7 +1197,7 @@ async function startServer() {
   });
 
   // Burials Endpoints
-  app.get('/api/burials', authenticateToken, (req, res) => {
+  app.get('/api/burials', (req, res) => {
     const populated = burialsStore.map((b) => ({
       ...b,
       plot: plotsStore.find((p) => p.id === b.plot_id),
@@ -1188,8 +1329,12 @@ async function startServer() {
     });
   });
 
-  // Audit Logs Endpoint
+  // Audit Logs Endpoints
   app.get('/api/audit', authenticateToken, (req, res) => {
+    res.json({ success: true, data: activityLogsStore });
+  });
+
+  app.get('/api/audit-logs', authenticateToken, (req, res) => {
     res.json({ success: true, data: activityLogsStore });
   });
 
@@ -1210,6 +1355,7 @@ async function startServer() {
       full_name,
       role,
       is_active: true,
+      is_new_account: true,
       department: department || undefined,
       phone: phone || undefined,
       address: address || undefined,

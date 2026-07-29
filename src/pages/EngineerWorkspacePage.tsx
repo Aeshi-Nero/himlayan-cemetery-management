@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { motion, AnimatePresence } from 'motion/react';
-import { MapContainer, TileLayer, Polygon, Polyline, Marker, Popup, useMap, ZoomControl } from 'react-leaflet';
+import { MapContainer, TileLayer, Polygon, Polyline, Marker, Popup, useMap, useMapEvents, ZoomControl } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { Navbar } from '../components/Navbar';
@@ -30,12 +30,15 @@ import {
   User,
   Copy,
   Trash2,
+  AlertTriangle,
   Settings,
   RotateCw,
   Pencil,
   Clock,
   LogOut,
   Check,
+  DoorOpen,
+  Share2,
 } from 'lucide-react';
 
 // Fix Leaflet icon URLs
@@ -107,14 +110,14 @@ const calcPlotDimensions = (plot: Plot, zoomLevel: number) => {
   const { lot_type: lotType, width, height } = plot;
   const scale = Math.pow(1.22, Math.max(0, zoomLevel - 16));
 
-  const baseW = width || (lotType === 'single' ? 14 : lotType === 'path' || lotType === 'border' ? 12 : 18);
-  const baseH = height || (lotType === 'single' ? 18 : lotType === 'path' || lotType === 'border' ? 12 : 24);
+  const baseW = width || (lotType === 'single' ? 14 : lotType === 'path' || lotType === 'border' || lotType === 'entrance' ? 12 : 18);
+  const baseH = height || (lotType === 'single' ? 18 : lotType === 'path' || lotType === 'border' || lotType === 'entrance' ? 12 : 24);
 
   let w = baseW * scale;
   let h = baseH * scale;
 
-  // Keep path and border nodes compact while plots can expand without limits
-  if (lotType === 'path' || lotType === 'border') {
+  // Keep path, border, and entrance nodes compact while plots can expand without limits
+  if (lotType === 'path' || lotType === 'border' || lotType === 'entrance') {
     w = Math.min(w, 20);
     h = Math.min(h, 20);
   }
@@ -447,31 +450,29 @@ const createPlotIcon = (
   const styleStr = `width: ${w}px; height: ${h}px; transform: rotate(${r}deg); ${activeStyle}`;
 
   let icon: L.DivIcon;
-  if (lotType === 'path') {
-    if (isEntrance) {
-      const entW = Math.max(w, 22);
-      const entH = Math.max(h, 22);
-      const entStyle = `width: ${entW}px; height: ${entH}px; transform: rotate(${r}deg); ${activeStyle}`;
-      icon = L.divIcon({
-        className: 'custom-engineer-plot-marker',
-        html: `<div style="background-color: #0d9488; border-radius: 50%; border: 2.5px solid #f59e0b; box-shadow: 0 0 10px #f59e0b, 0 0 5px #0d9488; cursor: pointer; display: flex; align-items: center; justify-content: center; ${entStyle}" title="Main Entrance Node">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M18 20V6a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v14"/>
-            <path d="M2 20h20"/>
-            <path d="M14 12v.01"/>
-          </svg>
-        </div>`,
-        iconSize: [entW, entH],
-        iconAnchor: [entW / 2, entH / 2],
-      });
-    } else {
-      icon = L.divIcon({
-        className: 'custom-engineer-plot-marker',
-        html: `<div style="background-color: #14b8a6; border-radius: 50%; border: 2.5px solid #0f766e; box-shadow: 0 0 8px #14b8a6; cursor: pointer; ${styleStr}"></div>`,
-        iconSize: [w, h],
-        iconAnchor: [w / 2, h / 2],
-      });
-    }
+  if (lotType === 'entrance' || (lotType === 'path' && isEntrance)) {
+    const entW = Math.max(w, 24);
+    const entH = Math.max(h, 24);
+    const entStyle = `width: ${entW}px; height: ${entH}px; transform: rotate(${r}deg); ${activeStyle}`;
+    icon = L.divIcon({
+      className: 'custom-engineer-plot-marker',
+      html: `<div style="background-color: #0d9488; border-radius: 50%; border: 2.5px solid #f59e0b; box-shadow: 0 0 10px #f59e0b, 0 0 5px #0d9488; cursor: pointer; display: flex; align-items: center; justify-content: center; ${entStyle}" title="Main Entrance Node">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M18 20V6a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v14"/>
+          <path d="M2 20h20"/>
+          <path d="M14 12v.01"/>
+        </svg>
+      </div>`,
+      iconSize: [entW, entH],
+      iconAnchor: [entW / 2, entH / 2],
+    });
+  } else if (lotType === 'path') {
+    icon = L.divIcon({
+      className: 'custom-engineer-plot-marker',
+      html: `<div style="background-color: #14b8a6; border-radius: 50%; border: 2.5px solid #0f766e; box-shadow: 0 0 8px #14b8a6; cursor: pointer; ${styleStr}"></div>`,
+      iconSize: [w, h],
+      iconAnchor: [w / 2, h / 2],
+    });
   } else if (lotType === 'border') {
     icon = L.divIcon({
       className: 'custom-engineer-plot-marker',
@@ -539,9 +540,9 @@ const TILE_URLS: Record<TileProvider, { url: string; attribution: string; name: 
 const MapEventsCapture: React.FC<{
   setMapInstance: (map: L.Map) => void;
   onMapClick: (latlng: L.LatLng) => void;
-  onDropTool: (tool: 'standard' | 'apartment' | 'ground' | 'point' | 'border', latlng: L.LatLng) => void;
+  onDropTool: (tool: 'standard' | 'apartment' | 'ground' | 'entrance' | 'point' | 'border', latlng: L.LatLng) => void;
   activeGisTool: string;
-  setActiveGisTool?: (tool: 'standard' | 'apartment' | 'ground' | 'point' | 'border' | 'select' | 'pan' | 'fill') => void;
+  setActiveGisTool?: (tool: 'standard' | 'apartment' | 'ground' | 'entrance' | 'point' | 'border' | 'select' | 'pan' | 'fill') => void;
   plots: Plot[];
   onPlotsSelected: (selected: Plot[], isAppend?: boolean) => void;
   ignoreMapClickRef: React.MutableRefObject<boolean>;
@@ -600,7 +601,7 @@ const MapEventsCapture: React.FC<{
     const handleDomDrop = (e: DragEvent) => {
       e.preventDefault();
       const tool = e.dataTransfer?.getData('text/plain') || '';
-      if (!['standard', 'apartment', 'ground', 'point', 'border'].includes(tool)) return;
+      if (!['standard', 'apartment', 'ground', 'entrance', 'point', 'border'].includes(tool)) return;
 
       const rect = container.getBoundingClientRect();
       const x = e.clientX - rect.left;
@@ -806,7 +807,7 @@ export const EngineerWorkspacePage: React.FC = () => {
   const [activeTile, setActiveTile] = useState<TileProvider>('osm');
   const [showDrawer, setShowDrawer] = useState(false);
   const [isLegendOpen, setIsLegendOpen] = useState(true);
-  const [activeGisTool, setActiveGisTool] = useState<'standard' | 'apartment' | 'ground' | 'point' | 'border' | 'select' | 'pan' | 'fill'>('pan');
+  const [activeGisTool, setActiveGisTool] = useState<'standard' | 'apartment' | 'ground' | 'entrance' | 'point' | 'border' | 'select' | 'pan' | 'fill'>('pan');
   const [plots, setPlots] = useState<Plot[]>([]);
   const [selectedPlot, setSelectedPlot] = useState<Plot | null>(null);
   const [selectedPlots, setSelectedPlots] = useState<Plot[]>([]);
@@ -1013,7 +1014,7 @@ export const EngineerWorkspacePage: React.FC = () => {
       );
       if (isTyping) return;
 
-      // Tool equipment shortcut commands (1-7)
+      // Tool equipment shortcut commands (1-8)
       if (e.key === '1') {
         setActiveGisTool('standard');
       } else if (e.key === '2') {
@@ -1021,12 +1022,14 @@ export const EngineerWorkspacePage: React.FC = () => {
       } else if (e.key === '3') {
         setActiveGisTool('ground');
       } else if (e.key === '4') {
-        setActiveGisTool('point');
+        setActiveGisTool('entrance');
       } else if (e.key === '5') {
-        setActiveGisTool('border');
+        setActiveGisTool('point');
       } else if (e.key === '6') {
+        setActiveGisTool('border');
+      } else if (e.key === '7') {
         setActiveGisTool('select');
-      } else if (e.key === '7' || e.key.toLowerCase() === 'v' || e.key.toLowerCase() === 'h') {
+      } else if (e.key === '8' || e.key.toLowerCase() === 'v' || e.key.toLowerCase() === 'h') {
         setActiveGisTool('pan');
       }
 
@@ -1272,7 +1275,7 @@ export const EngineerWorkspacePage: React.FC = () => {
     }
   };
 
-  const addPlotAtLocation = async (tool: 'standard' | 'apartment' | 'ground' | 'point' | 'border', latlng: L.LatLng) => {
+  const addPlotAtLocation = async (tool: 'standard' | 'apartment' | 'ground' | 'entrance' | 'point' | 'border', latlng: L.LatLng) => {
     // Check if plot is placed within boundary perimeter when perimeter nodes exist
     let activePolygonCheck: [number, number][] = [];
     const activeBordersForPlacementCheck = plots.filter((p) => p.lot_type === 'border' && (p.cemetery_id || 'default-himlayan') === activeCemeteryId);
@@ -1314,6 +1317,11 @@ export const EngineerWorkspacePage: React.FC = () => {
       lotType = 'family';
       capacity = 4;
       price = 35000;
+    } else if (tool === 'entrance') {
+      sec = 'ENT';
+      lotType = 'entrance';
+      capacity = 1;
+      price = 0;
     } else if (tool === 'point') {
       sec = 'D';
       lotType = 'path';
@@ -1361,6 +1369,63 @@ export const EngineerWorkspacePage: React.FC = () => {
     setPlots((prev) => [optimisticPlot, ...prev]);
     setSelectedPlot(optimisticPlot);
 
+    // If placed node is a path or entrance node, check if it falls on any existing connection segment between two path nodes
+    if (lotType === 'path' || lotType === 'entrance') {
+      const existingPathNodes = plots.filter(
+        (p) => (p.lot_type === 'path' || p.lot_type === 'entrance') && (p.cemetery_id || 'default-himlayan') === activeCemeteryId
+      );
+      
+      connections.forEach((conn) => {
+        if (conn.cemetery_id && conn.cemetery_id !== activeCemeteryId) return;
+        const nodeA = existingPathNodes.find((p) => p.id === conn.fromId);
+        const nodeB = existingPathNodes.find((p) => p.id === conn.toId);
+        if (!nodeA || !nodeB) return;
+
+        const ax = nodeA.lng || 121.0410;
+        const ay = nodeA.lat || 14.6720;
+        const bx = nodeB.lng || 121.0410;
+        const by = nodeB.lat || 14.6720;
+        const px = latlng.lng;
+        const py = latlng.lat;
+
+        const abx = bx - ax;
+        const aby = by - ay;
+        const abLenSq = abx * abx + aby * aby;
+        if (abLenSq === 0) return;
+
+        const apx = px - ax;
+        const apy = py - ay;
+        const t = (apx * abx + apy * aby) / abLenSq;
+
+        if (t >= 0.05 && t <= 0.95) {
+          const cx = ax + t * abx;
+          const cy = ay + t * aby;
+          const dist = Math.hypot(px - cx, py - cy);
+
+          if (dist < 0.003) {
+            setConnections((prevConn) => {
+              const filtered = prevConn.filter((c) => c.id !== conn.id);
+              return [
+                ...filtered,
+                {
+                  id: `conn-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+                  fromId: nodeA.id,
+                  toId: tempId,
+                  cemetery_id: activeCemeteryId,
+                },
+                {
+                  id: `conn-${Date.now() + 1}-${Math.random().toString(36).substring(2, 6)}`,
+                  fromId: tempId,
+                  toId: nodeB.id,
+                  cemetery_id: activeCemeteryId,
+                },
+              ];
+            });
+          }
+        }
+      });
+    }
+
     // Sync with server in background
     apiClient.post('/plots', {
       plot_number: plotNumber,
@@ -1384,7 +1449,7 @@ export const EngineerWorkspacePage: React.FC = () => {
     });
   };
 
-  const handleDragStart = (e: React.DragEvent<HTMLButtonElement>, tool: 'standard' | 'apartment' | 'ground' | 'point' | 'border' | 'select' | 'pan' | 'fill') => {
+  const handleDragStart = (e: React.DragEvent<HTMLButtonElement>, tool: 'standard' | 'apartment' | 'ground' | 'entrance' | 'point' | 'border' | 'select' | 'pan' | 'fill') => {
     setActiveGisTool(tool);
     e.dataTransfer.setData('text/plain', tool);
     e.dataTransfer.effectAllowed = 'copy';
@@ -1394,7 +1459,7 @@ export const EngineerWorkspacePage: React.FC = () => {
     e.preventDefault();
     if (!map) return;
     const tool = e.dataTransfer.getData('text/plain');
-    if (!['standard', 'apartment', 'ground', 'point', 'border'].includes(tool)) return;
+    if (!['standard', 'apartment', 'ground', 'entrance', 'point', 'border'].includes(tool)) return;
 
     const mapContainer = map.getContainer();
     const rect = mapContainer.getBoundingClientRect();
@@ -1411,7 +1476,7 @@ export const EngineerWorkspacePage: React.FC = () => {
       return;
     }
     setPlotContextMenu(null);
-    if (['standard', 'apartment', 'ground', 'point', 'border'].includes(activeGisTool)) {
+    if (['standard', 'apartment', 'ground', 'entrance', 'point', 'border'].includes(activeGisTool)) {
       await addPlotAtLocation(activeGisTool as any, latlng);
     } else {
       setSelectedPlot(null);
@@ -1464,22 +1529,19 @@ export const EngineerWorkspacePage: React.FC = () => {
     polygonCoords: [number, number][];
     geojsonText: string;
     center: [number, number];
-  }>>([
-    {
-      id: 'default-himlayan',
-      name: 'Himlayan Memorial Park',
-      location: 'Metro Manila',
-      polygonCoords: [
-        [14.6750, 121.0370],
-        [14.6750, 121.0450],
-        [14.6650, 121.0450],
-        [14.6650, 121.0370],
-      ],
-      geojsonText: '',
-      center: [14.6710, 121.0415],
-    }
-  ]);
-  const [activeCemeteryId, setActiveCemeteryId] = useState('default-himlayan');
+  }>>([]);
+  const [activeCemeteryId, setActiveCemeteryId] = useState('');
+
+  // Delete Cemetery Confirmation Modal State
+  const [showDeleteCemeteryPrompt, setShowDeleteCemeteryPrompt] = useState(false);
+  const [cemeteryToDelete, setCemeteryToDelete] = useState<{
+    id: string;
+    name: string;
+    location: string;
+    polygonCoords: [number, number][];
+    geojsonText: string;
+    center: [number, number];
+  } | null>(null);
 
   // Add Cemetery Modal State
   const [showAddModal, setShowAddModal] = useState(false);
@@ -1514,83 +1576,118 @@ export const EngineerWorkspacePage: React.FC = () => {
     return () => clearTimeout(timer);
   }, [newLocationInput]);
 
+  // Connections and Drag Connect State
+  const [connections, setConnections] = useState<Array<{ id: string; fromId: string; toId: string; cemetery_id?: string }>>([]);
+  const [connectingNodeId, setConnectingNodeId] = useState<string | null>(null);
+
+  const handlePlotClickForConnection = (targetPlotId: string) => {
+    if (!connectingNodeId || connectingNodeId === targetPlotId) return;
+    const exists = connections.some(
+      (c) => (c.fromId === connectingNodeId && c.toId === targetPlotId) || (c.fromId === targetPlotId && c.toId === connectingNodeId)
+    );
+    if (!exists) {
+      setConnections((prev) => [
+        ...prev,
+        {
+          id: `conn-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+          fromId: connectingNodeId,
+          toId: targetPlotId,
+          cemetery_id: activeCemeteryId,
+        },
+      ]);
+    }
+    setConnectingNodeId(null);
+  };
+
+  // Auto-open "Add Cemetery Map" modal for newly created or reset engineer accounts
+  useEffect(() => {
+    if (user && user.role === 'engineer') {
+      const storageKey = `has_seen_add_cemetery_map_${user.id}`;
+      const hasSeenAddModal = localStorage.getItem(storageKey);
+
+      if (!hasSeenAddModal || cemeteries.length === 0) {
+        setShowAddModal(true);
+      }
+    }
+  }, [user, cemeteries.length]);
+
+  const handleCloseAddModal = () => {
+    if (user?.id) {
+      localStorage.setItem(`has_seen_add_cemetery_map_${user.id}`, 'true');
+    }
+    setShowAddModal(false);
+  };
+
   // Edit Cemetery Name Modal State
   const [showEditCemeteryModal, setShowEditCemeteryModal] = useState(false);
   const [editCemeteryNameInput, setEditCemeteryNameInput] = useState('');
   const [editCemeteryLocationInput, setEditCemeteryLocationInput] = useState('');
 
-  // Polygon Coordinates for Himlayan Cemetery
-  const [polygonCoords, setPolygonCoords] = useState<[number, number][]>([
-    [14.6750, 121.0370],
-    [14.6750, 121.0450],
-    [14.6650, 121.0450],
-    [14.6650, 121.0370],
-  ]);
+  // Polygon Coordinates for Cemetery
+  const [polygonCoords, setPolygonCoords] = useState<[number, number][]>([]);
+
+  // Delete cemetery action
+  const handleConfirmDeleteCemetery = async () => {
+    if (!cemeteryToDelete) return;
+    const targetId = cemeteryToDelete.id;
+
+    // Filter out target plots
+    const targetPlots = plots.filter(
+      (p) => (p.cemetery_id || 'default-himlayan') === targetId || (targetId === 'default-himlayan' && !p.cemetery_id)
+    );
+
+    for (const p of targetPlots) {
+      try {
+        await apiClient.delete(`/plots/${p.id}`);
+      } catch (err) {
+        console.error('Error deleting plot:', err);
+      }
+    }
+
+    setPlots((prev) =>
+      prev.filter(
+        (p) =>
+          (p.cemetery_id || 'default-himlayan') !== targetId &&
+          !(targetId === 'default-himlayan' && !p.cemetery_id)
+      )
+    );
+
+    const remaining = cemeteries.filter((c) => c.id !== targetId);
+    setCemeteries(remaining);
+
+    if (activeCemeteryId === targetId) {
+      if (remaining.length > 0) {
+        const nextCem = remaining[0];
+        setActiveCemeteryId(nextCem.id);
+        setCemeteryName(nextCem.name);
+        setLocation(nextCem.location);
+        setPolygonCoords(nextCem.polygonCoords);
+        setGeojsonText(nextCem.geojsonText);
+        setNeedsBorderNode(nextCem.polygonCoords.length === 0);
+        if (map && nextCem.center) {
+          map.flyTo(nextCem.center, 17, { duration: 0.4 });
+        }
+      } else {
+        setActiveCemeteryId('');
+        setCemeteryName('');
+        setLocation('');
+        setPolygonCoords([]);
+        setGeojsonText('');
+        setShowAddModal(true);
+      }
+    }
+
+    setShowDeleteCemeteryPrompt(false);
+    setCemeteryToDelete(null);
+  };
 
   // Load existing cemetery map GeoJSON and plots on mount
   useEffect(() => {
     const fetchMapAndPlots = async () => {
       try {
-        const [mapRes, plotsRes] = await Promise.all([
-          apiClient.get('/cemetery-map'),
+        const [plotsRes] = await Promise.all([
           apiClient.get('/plots?limit=10000'),
         ]);
-
-        if (mapRes.data?.success && mapRes.data.data) {
-          const mapData = mapRes.data.data;
-          const loadedName = mapData.name || 'Himlayan Memorial Park';
-          const loadedLoc = mapData.location || 'Metro Manila';
-          setCemeteryName(loadedName);
-          setLocation(loadedLoc);
-          setDescription(mapData.description || description);
-          let loadedGeo = '';
-          if (mapData.boundary_data) {
-            loadedGeo = JSON.stringify(mapData.boundary_data, null, 2);
-            setGeojsonText(loadedGeo);
-          }
-          setCemeteries([
-            {
-              id: 'default-himlayan',
-              name: loadedName,
-              location: loadedLoc,
-              polygonCoords: [
-                [14.6750, 121.0370],
-                [14.6750, 121.0450],
-                [14.6650, 121.0450],
-                [14.6650, 121.0370],
-              ],
-              geojsonText: loadedGeo,
-              center: [14.6710, 121.0415],
-            }
-          ]);
-        } else {
-          // Initialize default GeoJSON
-          const defaultGeoJson = {
-            type: 'FeatureCollection',
-            features: [
-              {
-                type: 'Feature',
-                properties: { name: cemeteryName, location },
-                geometry: {
-                  type: 'Polygon',
-                  coordinates: [polygonCoords.map((c) => [c[1], c[0]])],
-                },
-              },
-            ],
-          };
-          const defGeoStr = JSON.stringify(defaultGeoJson, null, 2);
-          setGeojsonText(defGeoStr);
-          setCemeteries([
-            {
-              id: 'default-himlayan',
-              name: 'Himlayan Memorial Park',
-              location: 'Metro Manila',
-              polygonCoords: polygonCoords,
-              geojsonText: defGeoStr,
-              center: [14.6710, 121.0415],
-            }
-          ]);
-        }
 
         if (plotsRes.data?.success) {
           setPlots(plotsRes.data.data || []);
@@ -1708,6 +1805,9 @@ export const EngineerWorkspacePage: React.FC = () => {
     setCemeteries((prev) => [...prev, newCemeteryItem]);
     setActiveCemeteryId(newId);
 
+    if (user?.id) {
+      localStorage.setItem(`has_seen_add_cemetery_map_${user.id}`, 'true');
+    }
     setShowAddModal(false);
     setNewCemeteryNameInput('');
     setNewLocationInput('');
@@ -1779,6 +1879,21 @@ export const EngineerWorkspacePage: React.FC = () => {
         }}
         onDrop={handleDrop}
       >
+        {/* Connecting Mode Banner */}
+        {connectingNodeId && (
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 z-40 bg-teal-600 text-white px-5 py-2.5 rounded-2xl shadow-2xl flex items-center gap-3 text-xs font-bold animate-in fade-in slide-in-from-top-4 border border-teal-500/50">
+            <span className="flex items-center gap-2">
+              <Share2 className="w-4 h-4 animate-spin" />
+              <span>Connecting node #{plots.find((p) => p.id === connectingNodeId)?.plot_number}. Click another path node or plot box to connect.</span>
+            </span>
+            <button
+              onClick={() => setConnectingNodeId(null)}
+              className="bg-white/20 hover:bg-white/30 text-white px-3 py-1 rounded-xl text-[11px] transition-colors cursor-pointer"
+            >
+              Cancel
+            </button>
+          </div>
+        )}
         {/* Floating Top Right Save Control Stack (Outside Header) */}
         <div
           onMouseDown={(e) => e.stopPropagation()}
@@ -1786,16 +1901,18 @@ export const EngineerWorkspacePage: React.FC = () => {
           onClick={(e) => e.stopPropagation()}
           className="absolute top-4 right-4 sm:right-8 z-30 flex flex-col items-end gap-2"
         >
-          {/* Green Save Button (outside header) */}
-          <button
-            onClick={handleSaveAllAssets}
-            disabled={saving}
-            className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs py-2.5 px-4 rounded-xl shadow-xl flex items-center gap-2 border border-emerald-500/50 transition-all cursor-pointer active:scale-95 disabled:opacity-50"
-            title="Save placed assets for currently equipped cemetery tab"
-          >
-            <CheckCircle2 className="w-4 h-4 text-emerald-100" />
-            <span>{saving ? 'Saving...' : 'Save Placed Assets'}</span>
-          </button>
+          {/* Top Right Action Buttons Stack */}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleSaveAllAssets}
+              disabled={saving}
+              className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs py-2.5 px-4 rounded-xl shadow-xl flex items-center gap-2 border border-emerald-500/50 transition-all cursor-pointer active:scale-95 disabled:opacity-50"
+              title="Save placed assets for currently equipped cemetery tab"
+            >
+              <CheckCircle2 className="w-4 h-4 text-emerald-100" />
+              <span>{saving ? 'Saving...' : 'Save Placed Assets'}</span>
+            </button>
+          </div>
 
           {savedSuccess && (
             <div className="bg-emerald-500 text-white text-[11px] font-bold px-3 py-1.5 rounded-lg shadow-md flex items-center gap-1.5 animate-in fade-in zoom-in-95">
@@ -1856,7 +1973,17 @@ export const EngineerWorkspacePage: React.FC = () => {
                       >
                         <Pencil className="w-3.5 h-3.5" />
                       </button>
-                      <MapPin className="w-3.5 h-3.5 text-emerald-600" />
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setCemeteryToDelete(cem);
+                          setShowDeleteCemeteryPrompt(true);
+                        }}
+                        className="p-1 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-full transition-colors cursor-pointer"
+                        title="Delete Cemetery"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
                     </div>
                   </div>
                 );
@@ -2059,81 +2186,34 @@ export const EngineerWorkspacePage: React.FC = () => {
             );
           })()}
 
-          {/* Connected Path Nodes Line */}
-          {plots.filter((p) => p.lot_type === 'path' && (p.cemetery_id || 'default-himlayan') === activeCemeteryId).length > 1 && (
-            <Polyline
-              positions={(() => {
-                const pathPlots = plots.filter((p) => p.lot_type === 'path' && (p.cemetery_id || 'default-himlayan') === activeCemeteryId);
-                const sortedPathPlots = [...pathPlots].sort((a, b) => {
-                  const numA = parseInt(a.plot_number.split('-')[1] || '0', 10);
-                  const numB = parseInt(b.plot_number.split('-')[1] || '0', 10);
-                  if (numA && numB) return numA - numB;
-                  return plots.indexOf(a) - plots.indexOf(b);
-                });
-                return sortedPathPlots.map((p) => [p.lat || 14.6720, p.lng || 121.0410] as [number, number]);
-              })()}
-              pathOptions={{
-                color: '#14b8a6',
-                weight: 3.5,
-                dashArray: '6, 6',
-                lineCap: 'round',
-                lineJoin: 'round',
-              }}
-            />
-          )}
-
-          {/* Path Nodes Connected to Plot Boxes (Single Nearest Path Node per Box) */}
-          {(() => {
-            const pathPlots = plots.filter((p) => p.lot_type === 'path' && (p.cemetery_id || 'default-himlayan') === activeCemeteryId);
-            const boxPlots = plots.filter((p) => p.lot_type !== 'path' && p.lot_type !== 'border' && (p.cemetery_id || 'default-himlayan') === activeCemeteryId);
-            if (pathPlots.length === 0 || boxPlots.length === 0) return null;
-
-            const lines: Array<{ id: string; pos: [[number, number], [number, number]] }> = [];
-            
-            boxPlots.forEach((box) => {
-              const bLat = box.lat || 14.6720;
-              const bLng = box.lng || 121.0410;
-
-              let closestPath: Plot | null = null;
-              let minDist = Infinity;
-
-              pathPlots.forEach((pathNode) => {
-                const pLat = pathNode.lat || 14.6720;
-                const pLng = pathNode.lng || 121.0410;
-                const dist = Math.hypot(pLat - bLat, pLng - bLng);
-                if (dist < minDist) {
-                  minDist = dist;
-                  closestPath = pathNode;
-                }
-              });
-
-              if (closestPath && minDist <= 0.0012) {
-                const pLat = (closestPath as Plot).lat || 14.6720;
-                const pLng = (closestPath as Plot).lng || 121.0410;
-                lines.push({
-                  id: `${(closestPath as Plot).id}-${box.id}`,
-                  pos: [[pLat, pLng], [bLat, bLng]],
-                });
-              }
-            });
-
-            return lines.map((line) => (
-              <Polyline
-                key={line.id}
-                positions={line.pos}
-                pathOptions={{
-                  color: '#14b8a6',
-                  weight: 2,
-                  dashArray: '3, 4',
-                  opacity: 0.75,
-                }}
-              />
-            ));
-          })()}
+          {/* User-Established Connections (Polylines) */}
+          {connections
+            .filter((c) => !c.cemetery_id || c.cemetery_id === activeCemeteryId)
+            .map((conn) => {
+              const fromPlot = plots.find((p) => p.id === conn.fromId);
+              const toPlot = plots.find((p) => p.id === conn.toId);
+              if (!fromPlot || !toPlot) return null;
+              const fLat = fromPlot.lat || 14.6720;
+              const fLng = fromPlot.lng || 121.0410;
+              const tLat = toPlot.lat || 14.6720;
+              const tLng = toPlot.lng || 121.0410;
+              return (
+                <Polyline
+                  key={conn.id}
+                  positions={[[fLat, fLng], [tLat, tLng]]}
+                  pathOptions={{
+                    color: '#14b8a6',
+                    weight: 3,
+                    dashArray: '4, 4',
+                    opacity: 0.85,
+                  }}
+                />
+              );
+            })}
 
           {/* Individual Plot Markers */}
           {(() => {
-            const firstPathPlotId = plots.find((p) => p.lot_type === 'path')?.id;
+            const firstPathPlotId = plots.find((p) => p.lot_type === 'entrance')?.id || plots.find((p) => p.lot_type === 'path')?.id;
             return filteredPlots.map((plot) => (
               <Marker
                 key={plot.id}
@@ -2312,6 +2392,10 @@ export const EngineerWorkspacePage: React.FC = () => {
                   }, 150);
                 },
                 click: (e) => {
+                  if (connectingNodeId) {
+                    handlePlotClickForConnection(plot.id);
+                    return;
+                  }
                   setPlotContextMenu(null);
                   ignoreMapClickRef.current = true;
                   if (isDraggingRef.current) return;
@@ -2515,7 +2599,7 @@ export const EngineerWorkspacePage: React.FC = () => {
         >
           {/* Draggable Helper Text */}
           <div className="absolute -top-8 left-1/2 -translate-x-1/2 bg-slate-900/95 text-[10px] text-white px-2.5 py-1 rounded-full opacity-0 group-hover/toolbar:opacity-100 transition-opacity duration-200 pointer-events-none whitespace-nowrap shadow-md font-semibold">
-            💡 Drag & drop or press key shortcuts [1-7] to equip tools
+            💡 Drag & drop or press key shortcuts [1-8] to equip tools
           </div>
 
           {/* Tool 1: Standard Plot (Rectangle Outline) */}
@@ -2578,12 +2662,32 @@ export const EngineerWorkspacePage: React.FC = () => {
             </span>
           </button>
 
-          {/* Tool 4: Path / Point Circle */}
+          {/* Tool 4: Entrance Node Tool */}
+          <button
+            onClick={() => setActiveGisTool('entrance')}
+            onDragStart={(e) => handleDragStart(e, 'entrance')}
+            draggable={true}
+            title="Entrance Node Tool (Shortcut: Key [4])"
+            className={`p-2 rounded-xl transition-all duration-200 flex items-center justify-center cursor-grab active:cursor-grabbing relative ${
+              activeGisTool === 'entrance'
+                ? 'bg-slate-100/90 shadow-sm scale-105'
+                : 'hover:bg-slate-50/60 opacity-80 hover:opacity-100'
+            }`}
+          >
+            <div className="w-6 h-6 border-[1.5px] border-slate-800 rounded-full bg-teal-800 border-amber-500 flex items-center justify-center pointer-events-none">
+              <DoorOpen className="w-3.5 h-3.5 text-amber-400" />
+            </div>
+            <span className="absolute -bottom-1 -right-1 bg-slate-800 text-white font-mono text-[9px] font-extrabold px-1 rounded shadow-2xs border border-slate-700 pointer-events-none">
+              4
+            </span>
+          </button>
+
+          {/* Tool 5: Path / Point Circle */}
           <button
             onClick={() => setActiveGisTool('point')}
             onDragStart={(e) => handleDragStart(e, 'point')}
             draggable={true}
-            title="Path Tool (Shortcut: Key [4])"
+            title="Path Tool (Shortcut: Key [5])"
             className={`p-2 rounded-xl transition-all duration-200 flex items-center justify-center cursor-grab active:cursor-grabbing relative ${
               activeGisTool === 'point'
                 ? 'bg-slate-100/90 shadow-sm scale-105'
@@ -2594,16 +2698,16 @@ export const EngineerWorkspacePage: React.FC = () => {
               <div className="w-3.5 h-3.5 rounded-full bg-[#009bb4]" />
             </div>
             <span className="absolute -bottom-1 -right-1 bg-slate-800 text-white font-mono text-[9px] font-extrabold px-1 rounded shadow-2xs border border-slate-700 pointer-events-none">
-              4
+              5
             </span>
           </button>
 
-          {/* Tool 4.5: Border Point Tool */}
+          {/* Tool 6: Border Point Tool */}
           <button
             onClick={() => setActiveGisTool('border')}
             onDragStart={(e) => handleDragStart(e, 'border')}
             draggable={true}
-            title="Border Tool (Shortcut: Key [5])"
+            title="Border Tool (Shortcut: Key [6])"
             className={`p-2 rounded-xl transition-all duration-200 flex items-center justify-center cursor-grab active:cursor-grabbing relative ${
               activeGisTool === 'border'
                 ? 'bg-slate-100/90 shadow-sm scale-105'
@@ -2614,19 +2718,19 @@ export const EngineerWorkspacePage: React.FC = () => {
               <div className="w-3.5 h-3.5 rounded-full bg-[#10b981]" />
             </div>
             <span className="absolute -bottom-1 -right-1 bg-slate-800 text-white font-mono text-[9px] font-extrabold px-1 rounded shadow-2xs border border-slate-700 pointer-events-none">
-              5
+              6
             </span>
           </button>
 
           {/* Vertical Divider */}
           <div className="w-[1px] h-7 bg-slate-200/90 mx-1" />
 
-          {/* Tool 4.75: Select Tool */}
+          {/* Tool 7: Select Tool */}
           <button
             onClick={() => setActiveGisTool('select')}
             onDragStart={(e) => handleDragStart(e, 'select')}
             draggable={true}
-            title="Select Tool (Shortcut: Key [6])"
+            title="Select Tool (Shortcut: Key [7])"
             className={`p-2 rounded-xl transition-all duration-200 flex items-center justify-center cursor-pointer relative ${
               activeGisTool === 'select'
                 ? 'bg-slate-100/90 shadow-sm scale-105'
@@ -2635,16 +2739,16 @@ export const EngineerWorkspacePage: React.FC = () => {
           >
             <Plus className="w-6 h-6 text-slate-800 stroke-[1.5] pointer-events-none" />
             <span className="absolute -bottom-1 -right-1 bg-slate-800 text-white font-mono text-[9px] font-extrabold px-1 rounded shadow-2xs border border-slate-700 pointer-events-none">
-              6
+              7
             </span>
           </button>
 
-          {/* Tool 5: Pan / Hand Tool */}
+          {/* Tool 8: Pan / Hand Tool */}
           <button
             onClick={() => setActiveGisTool('pan')}
             onDragStart={(e) => handleDragStart(e, 'pan')}
             draggable={true}
-            title="Pan Tool (Shortcut: Key [7] or V)"
+            title="Pan Tool (Shortcut: Key [8] or V)"
             className={`p-2 rounded-xl transition-all duration-200 flex items-center justify-center cursor-pointer relative ${
               activeGisTool === 'pan'
                 ? 'bg-slate-100/90 shadow-sm scale-105'
@@ -2653,7 +2757,7 @@ export const EngineerWorkspacePage: React.FC = () => {
           >
             <Hand className="w-6 h-6 text-slate-800 stroke-[1.5] pointer-events-none" />
             <span className="absolute -bottom-1 -right-1 bg-slate-800 text-white font-mono text-[9px] font-extrabold px-1 rounded shadow-2xs border border-slate-700 pointer-events-none">
-              7
+              8
             </span>
           </button>
         </div>
@@ -2663,7 +2767,7 @@ export const EngineerWorkspacePage: React.FC = () => {
           const activePlot = plots.find((p) => p.id === plotContextMenu.plotId);
           if (!activePlot) return null;
 
-          const isNode = activePlot.lot_type === 'path' || activePlot.lot_type === 'border';
+          const isNode = activePlot.lot_type === 'path' || activePlot.lot_type === 'border' || activePlot.lot_type === 'entrance';
           const cardWidth = isNode ? 240 : 310;
           const cardHeight = isNode ? 120 : 380;
           const leftPos = Math.max(10, Math.min(plotContextMenu.x + 12, window.innerWidth - cardWidth - 16));
@@ -2698,17 +2802,32 @@ export const EngineerWorkspacePage: React.FC = () => {
                   </button>
                 </div>
 
-                <button
-                  onClick={() => {
-                    ignoreMapClickRef.current = true;
-                    removePlot(activePlot);
-                    setPlotContextMenu(null);
-                  }}
-                  className="w-full bg-rose-600 hover:bg-rose-700 text-white font-bold py-2 rounded-xl text-xs text-center transition-all cursor-pointer shadow-xs flex items-center justify-center gap-1.5"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                  <span>Delete Node</span>
-                </button>
+                <div className="flex flex-col gap-2">
+                  {(activePlot.lot_type === 'path' || activePlot.lot_type === 'entrance') && (
+                    <button
+                      onClick={() => {
+                        setConnectingNodeId(activePlot.id);
+                        setPlotContextMenu(null);
+                      }}
+                      className="w-full bg-teal-600 hover:bg-teal-700 text-white font-bold py-2 rounded-xl text-xs text-center transition-all cursor-pointer shadow-xs flex items-center justify-center gap-1.5"
+                    >
+                      <Share2 className="w-3.5 h-3.5" />
+                      <span>Drag Connect</span>
+                    </button>
+                  )}
+
+                  <button
+                    onClick={() => {
+                      ignoreMapClickRef.current = true;
+                      removePlot(activePlot);
+                      setPlotContextMenu(null);
+                    }}
+                    className="w-full bg-rose-600 hover:bg-rose-700 text-white font-bold py-2 rounded-xl text-xs text-center transition-all cursor-pointer shadow-xs flex items-center justify-center gap-1.5"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Delete Node</span>
+                  </button>
+                </div>
               </div>
             );
           }
@@ -2818,7 +2937,7 @@ export const EngineerWorkspacePage: React.FC = () => {
               )}
 
               {/* Deceased Person Names per Stack Level Editor */}
-              {(() => {
+              {activePlot.status !== 'available' && (() => {
                 const currentDeceased = getPlotDeceasedNames(activePlot);
                 const isApartment = activePlot.lot_type === 'apartment';
                 return (
@@ -3160,8 +3279,8 @@ export const EngineerWorkspacePage: React.FC = () => {
           <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4">
             <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200 relative animate-in fade-in zoom-in-95 duration-200">
               <button
-                onClick={() => setShowAddModal(false)}
-                className="absolute top-4 right-4 p-2 text-slate-400 hover:text-slate-700 rounded-full hover:bg-slate-100 transition-colors"
+                onClick={handleCloseAddModal}
+                className="absolute top-4 right-4 p-2 text-slate-400 hover:text-slate-700 rounded-full hover:bg-slate-100 transition-colors cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -3237,7 +3356,7 @@ export const EngineerWorkspacePage: React.FC = () => {
 
               <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
                 <button
-                  onClick={() => setShowAddModal(false)}
+                  onClick={handleCloseAddModal}
                   className="px-4 py-2.5 rounded-full text-xs font-semibold text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
                 >
                   Cancel
@@ -3320,6 +3439,65 @@ export const EngineerWorkspacePage: React.FC = () => {
                 >
                   <CheckCircle2 className="w-4 h-4" />
                   <span>Save Changes</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Delete Cemetery Confirmation Modal */}
+        {showDeleteCemeteryPrompt && cemeteryToDelete && (
+          <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4">
+            <div className="bg-white rounded-3xl max-w-sm w-full p-6 shadow-2xl border border-slate-200 relative animate-in fade-in zoom-in-95 duration-200 text-slate-900">
+              <button
+                onClick={() => {
+                  setShowDeleteCemeteryPrompt(false);
+                  setCemeteryToDelete(null);
+                }}
+                className="absolute top-4 right-4 p-2 text-slate-400 hover:text-slate-700 rounded-full hover:bg-slate-100 transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+
+              <div className="flex items-center gap-3 mb-3">
+                <div className="w-10 h-10 rounded-2xl bg-red-100 text-red-600 flex items-center justify-center shrink-0">
+                  <AlertTriangle className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-heading font-bold text-base text-slate-900">
+                    Delete Cemetery
+                  </h3>
+                  <p className="text-xs text-slate-500 font-medium truncate max-w-[200px]">
+                    {cemeteryToDelete.name}
+                  </p>
+                </div>
+              </div>
+
+              <div className="my-4 bg-slate-50 p-3.5 rounded-xl border border-slate-200/80">
+                <p className="text-xs text-slate-700 font-semibold leading-relaxed">
+                  Are you sure you want to delete this cemetery?
+                </p>
+                <p className="text-[11px] text-slate-500 mt-1 font-normal">
+                  All associated plots, path nodes, and boundary data will be permanently deleted.
+                </p>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+                <button
+                  onClick={() => {
+                    setShowDeleteCemeteryPrompt(false);
+                    setCemeteryToDelete(null);
+                  }}
+                  className="px-4 py-2.5 rounded-full text-xs font-semibold text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleConfirmDeleteCemetery}
+                  className="px-5 py-2.5 rounded-full text-xs font-bold text-white bg-red-600 hover:bg-red-700 shadow-md transition-all cursor-pointer flex items-center gap-1.5 active:scale-95"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Delete Cemetery</span>
                 </button>
               </div>
             </div>
@@ -3454,6 +3632,9 @@ export const EngineerWorkspacePage: React.FC = () => {
                     <option value="single">Single Lawn</option>
                     <option value="family">Family Ground</option>
                     <option value="apartment">Apartment</option>
+                    <option value="entrance">Entrance Node</option>
+                    <option value="path">Path Node</option>
+                    <option value="border">Border Node</option>
                   </select>
                 </div>
 
