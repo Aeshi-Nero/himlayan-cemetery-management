@@ -124,6 +124,85 @@ const ZoomListener = ({ onZoom }: { onZoom: (zoom: number) => void }) => {
   return null;
 };
 
+// Helper: sort border nodes to form a simple non-self-intersecting polygon loop using a Euclidean TSP tour with 2-opt uncrossing
+const sortBorderPlotsSequentially = (borderPlots: Plot[]): Plot[] => {
+  if (borderPlots.length <= 2) return borderPlots;
+
+  const getDist = (p1: Plot, p2: Plot) => {
+    const lat1 = p1.lat ?? 14.6720;
+    const lng1 = p1.lng ?? 121.0410;
+    const lat2 = p2.lat ?? 14.6720;
+    const lng2 = p2.lng ?? 121.0410;
+    const dLat = lat2 - lat1;
+    const dLng = lng2 - lng1;
+    return dLat * dLat + dLng * dLng;
+  };
+
+  const n = borderPlots.length;
+
+  // Build an initial tour using Nearest Neighbor heuristic starting at index 0
+  let tour: number[] = [0];
+  const visited = new Set<number>([0]);
+
+  while (tour.length < n) {
+    const currentIdx = tour[tour.length - 1];
+    let bestNext = -1;
+    let minDist = Infinity;
+
+    for (let i = 0; i < n; i++) {
+      if (!visited.has(i)) {
+        const d = getDist(borderPlots[currentIdx], borderPlots[i]);
+        if (d < minDist) {
+          minDist = d;
+          bestNext = i;
+        }
+      }
+    }
+
+    if (bestNext !== -1) {
+      tour.push(bestNext);
+      visited.add(bestNext);
+    } else {
+      break;
+    }
+  }
+
+  // Refine the tour using iterative 2-opt swaps to eliminate any self-intersecting crossings
+  let improved = true;
+  let iterations = 0;
+  const maxIterations = 200;
+
+  while (improved && iterations < maxIterations) {
+    improved = false;
+    iterations++;
+
+    for (let i = 0; i < n - 1; i++) {
+      for (let j = i + 2; j < n; j++) {
+        const nextJ = (j + 1) % n;
+        if (nextJ === i) continue;
+
+        const currentDist =
+          Math.sqrt(getDist(borderPlots[tour[i]], borderPlots[tour[i + 1]])) +
+          Math.sqrt(getDist(borderPlots[tour[j]], borderPlots[tour[nextJ]]));
+
+        const newDist =
+          Math.sqrt(getDist(borderPlots[tour[i]], borderPlots[tour[j]])) +
+          Math.sqrt(getDist(borderPlots[tour[i + 1]], borderPlots[tour[nextJ]]));
+
+        if (newDist < currentDist - 1e-9) {
+          // Perform 2-opt swap: reverse the tour segment from i+1 to j
+          const segment = tour.slice(i + 1, j + 1);
+          segment.reverse();
+          tour.splice(i + 1, j - i, ...segment);
+          improved = true;
+        }
+      }
+    }
+  }
+
+  return tour.map(idx => borderPlots[idx]);
+};
+
 export const MemorialMapPage: React.FC = () => {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
@@ -634,13 +713,7 @@ export const MemorialMapPage: React.FC = () => {
             {(() => {
               const borderPlots = plots.filter((p) => p.lot_type === 'border');
               if (borderPlots.length >= 3) {
-                const cLat = borderPlots.reduce((sum, p) => sum + (p.lat || 14.6720), 0) / borderPlots.length;
-                const cLng = borderPlots.reduce((sum, p) => sum + (p.lng || 121.0410), 0) / borderPlots.length;
-                const sorted = [...borderPlots].sort((a, b) => {
-                  const angleA = Math.atan2((a.lat || 14.6720) - cLat, (a.lng || 121.0410) - cLng);
-                  const angleB = Math.atan2((b.lat || 14.6720) - cLat, (b.lng || 121.0410) - cLng);
-                  return angleA - angleB;
-                });
+                const sorted = sortBorderPlotsSequentially(borderPlots);
                 const coords = sorted.map((p) => [p.lat || 14.6720, p.lng || 121.0410] as [number, number]);
                 return (
                   <Polygon

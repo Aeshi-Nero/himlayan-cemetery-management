@@ -291,7 +291,7 @@ export const LandingPage: React.FC = () => {
       <Navbar />
 
       {/* SECTION 1: HERO */}
-      <section className="relative z-20 min-h-[90vh] sm:min-h-[100vh] w-full bg-emerald-950 flex flex-col items-center justify-start pt-56 sm:pt-64 md:pt-76 pb-16">
+      <section className="relative z-20 min-h-[90vh] sm:min-h-[100vh] w-full bg-emerald-950 flex flex-col items-center justify-start pt-64 sm:pt-72 md:pt-84 pb-16">
         {/* Backdrop Image Layer - Clean backdrop image with Himlayan title script */}
         <div className="absolute inset-0 overflow-hidden">
           <div
@@ -305,7 +305,7 @@ export const LandingPage: React.FC = () => {
         </div>
 
         {/* Hero Content - Positioned directly below the Himlayan Calligraphy */}
-        <div className="relative z-10 max-w-4xl mx-auto px-4 text-center flex flex-col items-center justify-center mt-2 sm:mt-4 md:mt-6">
+        <div className="relative z-10 max-w-4xl mx-auto px-4 text-center flex flex-col items-center justify-center mt-6 sm:mt-8 md:mt-10">
           {/* Subtitle / Tagline */}
           <BlurText
             text="Honoring Lives, Preserving Memories"

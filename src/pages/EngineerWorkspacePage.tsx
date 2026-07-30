@@ -39,6 +39,7 @@ import {
   Check,
   DoorOpen,
   Share2,
+  Unlink,
 } from 'lucide-react';
 
 // Fix Leaflet icon URLs
@@ -87,6 +88,85 @@ const isPointInPolygon = (point: [number, number], polygon: [number, number][]):
   return inside;
 };
 
+// Helper: sort border nodes to form a simple non-self-intersecting polygon loop using a Euclidean TSP tour with 2-opt uncrossing
+const sortBorderPlotsSequentially = (borderPlots: Plot[]): Plot[] => {
+  if (borderPlots.length <= 2) return borderPlots;
+
+  const getDist = (p1: Plot, p2: Plot) => {
+    const lat1 = p1.lat ?? 14.6720;
+    const lng1 = p1.lng ?? 121.0410;
+    const lat2 = p2.lat ?? 14.6720;
+    const lng2 = p2.lng ?? 121.0410;
+    const dLat = lat2 - lat1;
+    const dLng = lng2 - lng1;
+    return dLat * dLat + dLng * dLng;
+  };
+
+  const n = borderPlots.length;
+
+  // Build an initial tour using Nearest Neighbor heuristic starting at index 0
+  let tour: number[] = [0];
+  const visited = new Set<number>([0]);
+
+  while (tour.length < n) {
+    const currentIdx = tour[tour.length - 1];
+    let bestNext = -1;
+    let minDist = Infinity;
+
+    for (let i = 0; i < n; i++) {
+      if (!visited.has(i)) {
+        const d = getDist(borderPlots[currentIdx], borderPlots[i]);
+        if (d < minDist) {
+          minDist = d;
+          bestNext = i;
+        }
+      }
+    }
+
+    if (bestNext !== -1) {
+      tour.push(bestNext);
+      visited.add(bestNext);
+    } else {
+      break;
+    }
+  }
+
+  // Refine the tour using iterative 2-opt swaps to eliminate any self-intersecting crossings
+  let improved = true;
+  let iterations = 0;
+  const maxIterations = 200;
+
+  while (improved && iterations < maxIterations) {
+    improved = false;
+    iterations++;
+
+    for (let i = 0; i < n - 1; i++) {
+      for (let j = i + 2; j < n; j++) {
+        const nextJ = (j + 1) % n;
+        if (nextJ === i) continue;
+
+        const currentDist =
+          Math.sqrt(getDist(borderPlots[tour[i]], borderPlots[tour[i + 1]])) +
+          Math.sqrt(getDist(borderPlots[tour[j]], borderPlots[tour[nextJ]]));
+
+        const newDist =
+          Math.sqrt(getDist(borderPlots[tour[i]], borderPlots[tour[j]])) +
+          Math.sqrt(getDist(borderPlots[tour[i + 1]], borderPlots[tour[nextJ]]));
+
+        if (newDist < currentDist - 1e-9) {
+          // Perform 2-opt swap: reverse the tour segment from i+1 to j
+          const segment = tour.slice(i + 1, j + 1);
+          segment.reverse();
+          tour.splice(i + 1, j - i, ...segment);
+          improved = true;
+        }
+      }
+    }
+  }
+
+  return tour.map(idx => borderPlots[idx]);
+};
+
 // Helper: parse deceased occupant names array from plot object or notes
 const getPlotDeceasedNames = (plot: Plot): string[] => {
   if (plot.deceased_names && Array.isArray(plot.deceased_names) && plot.deceased_names.length > 0) {
@@ -133,8 +213,9 @@ const PlotEditorOverlay: React.FC<{
   onDelete?: (plot: Plot) => void,
   ignoreMapClickRef?: React.MutableRefObject<boolean>,
   hideControls?: boolean,
-  marker?: L.Marker | null
-}> = ({ plot, map, onUpdate, zoomLevel, onDelete, ignoreMapClickRef, hideControls = false, marker = null }) => {
+  marker?: L.Marker | null,
+  activeGisTool?: string
+}> = ({ plot, map, onUpdate, zoomLevel, onDelete, ignoreMapClickRef, hideControls = false, marker = null, activeGisTool }) => {
   const [pos, setPos] = useState({ x: -9999, y: -9999 });
 
   useEffect(() => {
@@ -199,6 +280,18 @@ const PlotEditorOverlay: React.FC<{
 
   const { w, h, scale, baseW, baseH } = calcPlotDimensions(plot, zoomLevel);
   const r = plot.rotation || 0;
+
+  const handleMouseEnter = () => {
+    if (map && map.dragging) {
+      map.dragging.disable();
+    }
+  };
+
+  const handleMouseLeave = () => {
+    if (map && map.dragging && activeGisTool === 'pan') {
+      map.dragging.enable();
+    }
+  };
 
   const startDrag = (e: React.MouseEvent, type: 'resize' | 'rotate', corner?: string) => {
     e.stopPropagation();
@@ -272,7 +365,7 @@ const PlotEditorOverlay: React.FC<{
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
       
-      if (map && map.dragging) {
+      if (map && map.dragging && activeGisTool === 'pan') {
         map.dragging.enable();
       }
 
@@ -316,6 +409,8 @@ const PlotEditorOverlay: React.FC<{
           <div
             key={corner}
             onMouseDown={(e) => startDrag(e, 'resize', corner)}
+            onMouseEnter={handleMouseEnter}
+            onMouseLeave={handleMouseLeave}
             style={{
               position: 'absolute',
               width: 12,
@@ -336,10 +431,10 @@ const PlotEditorOverlay: React.FC<{
         {/* Mid-point width/height handles */}
         {!hideControls && (
           <>
-            <div onMouseDown={(e) => startDrag(e, 'resize', 'n')} style={{ position: 'absolute', top: -4, left: '50%', transform: 'translateX(-50%)', width: 12, height: 6, backgroundColor: 'white', border: '1.5px solid #8b5cf6', borderRadius: '4px', pointerEvents: 'auto', cursor: 'pointer' }} />
-            <div onMouseDown={(e) => startDrag(e, 'resize', 's')} style={{ position: 'absolute', bottom: -4, left: '50%', transform: 'translateX(-50%)', width: 12, height: 6, backgroundColor: 'white', border: '1.5px solid #8b5cf6', borderRadius: '4px', pointerEvents: 'auto', cursor: 'pointer' }} />
-            <div onMouseDown={(e) => startDrag(e, 'resize', 'w')} style={{ position: 'absolute', left: -4, top: '50%', transform: 'translateY(-50%)', width: 6, height: 12, backgroundColor: 'white', border: '1.5px solid #8b5cf6', borderRadius: '4px', pointerEvents: 'auto', cursor: 'pointer' }} />
-            <div onMouseDown={(e) => startDrag(e, 'resize', 'e')} style={{ position: 'absolute', right: -4, top: '50%', transform: 'translateY(-50%)', width: 6, height: 12, backgroundColor: 'white', border: '1.5px solid #8b5cf6', borderRadius: '4px', pointerEvents: 'auto', cursor: 'pointer' }} />
+            <div onMouseDown={(e) => startDrag(e, 'resize', 'n')} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} style={{ position: 'absolute', top: -4, left: '50%', transform: 'translateX(-50%)', width: 12, height: 6, backgroundColor: 'white', border: '1.5px solid #8b5cf6', borderRadius: '4px', pointerEvents: 'auto', cursor: 'pointer' }} />
+            <div onMouseDown={(e) => startDrag(e, 'resize', 's')} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} style={{ position: 'absolute', bottom: -4, left: '50%', transform: 'translateX(-50%)', width: 12, height: 6, backgroundColor: 'white', border: '1.5px solid #8b5cf6', borderRadius: '4px', pointerEvents: 'auto', cursor: 'pointer' }} />
+            <div onMouseDown={(e) => startDrag(e, 'resize', 'w')} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} style={{ position: 'absolute', left: -4, top: '50%', transform: 'translateY(-50%)', width: 6, height: 12, backgroundColor: 'white', border: '1.5px solid #8b5cf6', borderRadius: '4px', pointerEvents: 'auto', cursor: 'pointer' }} />
+            <div onMouseDown={(e) => startDrag(e, 'resize', 'e')} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} style={{ position: 'absolute', right: -4, top: '50%', transform: 'translateY(-50%)', width: 6, height: 12, backgroundColor: 'white', border: '1.5px solid #8b5cf6', borderRadius: '4px', pointerEvents: 'auto', cursor: 'pointer' }} />
           </>
         )}
         
@@ -347,6 +442,8 @@ const PlotEditorOverlay: React.FC<{
         {!hideControls && (
           <div 
             onMouseDown={(e) => startDrag(e, 'rotate')}
+            onMouseEnter={handleMouseEnter}
+            onMouseLeave={handleMouseLeave}
             style={{
               position: 'absolute',
               bottom: -32,
@@ -391,6 +488,8 @@ const PlotEditorOverlay: React.FC<{
               e.stopPropagation();
               if (ignoreMapClickRef) ignoreMapClickRef.current = true;
             }}
+            onMouseEnter={handleMouseEnter}
+            onMouseLeave={handleMouseLeave}
             style={{
               position: 'absolute',
               top: -32,
@@ -812,6 +911,19 @@ export const EngineerWorkspacePage: React.FC = () => {
   const [selectedPlot, setSelectedPlot] = useState<Plot | null>(null);
   const [selectedPlots, setSelectedPlots] = useState<Plot[]>([]);
   const [plotContextMenu, setPlotContextMenu] = useState<{ x: number; y: number; plotId: string } | null>(null);
+
+  // Track map interactions to force recalculation of screen positions of context menus
+  const [mapInteractionCount, setMapInteractionCount] = useState(0);
+  useEffect(() => {
+    if (!map) return;
+    const updatePosition = () => {
+      setMapInteractionCount((prev) => prev + 1);
+    };
+    map.on('zoom move zoomend moveend drag', updatePosition);
+    return () => {
+      map.off('zoom move zoomend moveend drag', updatePosition);
+    };
+  }, [map]);
   const [searchQuery, setSearchQuery] = useState('');
   const [isShiftPressed, setIsShiftPressed] = useState(false);
   const [deleteConfirmState, setDeleteConfirmState] = useState<{
@@ -1083,14 +1195,15 @@ export const EngineerWorkspacePage: React.FC = () => {
 
   const duplicatePlot = async (plot: Plot) => {
     saveToUndoStack();
-    const offsetLat = (plot.lat || 14.6710) + 0.00012;
-    const offsetLng = (plot.lng || 121.0415) + 0.00012;
+    const offsetLat = (plot.lat || 14.6710) + 0.0012;
+    const offsetLng = (plot.lng || 121.0415) + 0.0012;
     const nextPlotNumber = `${plot.section}-${plots.length + 101}`;
+    const targetLotType = plot.lot_type === 'border' ? 'path' : plot.lot_type;
     try {
       const res = await apiClient.post('/plots', {
         plot_number: nextPlotNumber,
         section: plot.section,
-        lot_type: plot.lot_type,
+        lot_type: targetLotType,
         capacity: plot.capacity,
         price: plot.price,
         status: plot.status,
@@ -1130,13 +1243,7 @@ export const EngineerWorkspacePage: React.FC = () => {
           )
         );
       } else if (remainingBorderPlots.length >= 3) {
-        const cLat = remainingBorderPlots.reduce((sum, p) => sum + (p.lat || 0), 0) / remainingBorderPlots.length;
-        const cLng = remainingBorderPlots.reduce((sum, p) => sum + (p.lng || 0), 0) / remainingBorderPlots.length;
-        const sorted = [...remainingBorderPlots].sort((a, b) => {
-          const angleA = Math.atan2((a.lat || 0) - cLat, (a.lng || 0) - cLng);
-          const angleB = Math.atan2((b.lat || 0) - cLat, (b.lng || 0) - cLng);
-          return angleA - angleB;
-        });
+        const sorted = sortBorderPlotsSequentially(remainingBorderPlots);
         const updatedCoords = sorted.map((p) => [p.lat || 0, p.lng || 0] as [number, number]);
         setPolygonCoords(updatedCoords);
         setCemeteries((cPrev) =>
@@ -1176,7 +1283,11 @@ export const EngineerWorkspacePage: React.FC = () => {
           }
           try {
             await apiClient.delete(`/plots/${plot.id}`);
-          } catch (err) {
+          } catch (err: any) {
+            if (err?.response?.status === 404) {
+              // Plot already deleted or never existed on server, ignore
+              return;
+            }
             console.error(`Error deleting plot ${plot.id}:`, err);
           }
         })
@@ -1224,10 +1335,15 @@ export const EngineerWorkspacePage: React.FC = () => {
   const duplicateMultiplePlots = async (plotsToDuplicate: Plot[]) => {
     try {
       saveToUndoStack();
+      const shiftLat = 0.003;
+      const shiftLng = 0.003;
+
+      const idMap = new Map<string, string>();
+
       const promises = plotsToDuplicate.map(async (plot, index) => {
-        const offsetLat = (plot.lat || 14.6710) + 0.00015;
-        const offsetLng = (plot.lng || 121.0415) + 0.00015;
-        const nextPlotNumber = `${plot.section}-${plots.length + 101 + index}`;
+        const offsetLat = (plot.lat || 14.6710) + shiftLat;
+        const offsetLng = (plot.lng || 121.0415) + shiftLng;
+        const nextPlotNumber = plot.lot_type === 'border' ? `Border-${Date.now().toString().slice(-4)}-${index}` : `${plot.section}-${plots.length + 101 + index}`;
         const res = await apiClient.post('/plots', {
           plot_number: nextPlotNumber,
           section: plot.section,
@@ -1237,11 +1353,16 @@ export const EngineerWorkspacePage: React.FC = () => {
           status: plot.status,
           lat: offsetLat,
           lng: offsetLng,
+          rotation: plot.rotation,
+          width: plot.width,
+          height: plot.height,
           cemetery_id: plot.cemetery_id || activeCemeteryId,
-          notes: `Duplicated from Lot #${plot.plot_number}`
+          notes: plot.lot_type === 'border' ? 'Independent border node' : `Duplicated from Lot #${plot.plot_number}`
         });
         if (res.data?.success && res.data.data) {
-          return res.data.data;
+          const newPlot = res.data.data;
+          idMap.set(plot.id, newPlot.id);
+          return newPlot;
         }
         return null;
       });
@@ -1250,6 +1371,44 @@ export const EngineerWorkspacePage: React.FC = () => {
       if (validResults.length > 0) {
         setPlots((prev) => [...validResults, ...prev]);
         setSelectedPlots(validResults);
+
+        const newConnections: Array<{ id: string; fromId: string; toId: string; cemetery_id?: string }> = [];
+        connections.forEach((conn) => {
+          if (idMap.has(conn.fromId) && idMap.has(conn.toId)) {
+            newConnections.push({
+              id: `conn-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+              fromId: idMap.get(conn.fromId)!,
+              toId: idMap.get(conn.toId)!,
+              cemetery_id: conn.cemetery_id || activeCemeteryId,
+            });
+          }
+        });
+
+        // Ensure duplicated border nodes are automatically connected to each other into an independent perimeter loop
+        const duplicatedBorderPlots = validResults.filter(p => p.lot_type === 'border');
+        if (duplicatedBorderPlots.length >= 2) {
+          const sortedBorders = sortBorderPlotsSequentially(duplicatedBorderPlots);
+
+          for (let i = 0; i < sortedBorders.length; i++) {
+            const curr = sortedBorders[i];
+            const next = sortedBorders[(i + 1) % sortedBorders.length];
+            const exists = newConnections.some(
+              c => (c.fromId === curr.id && c.toId === next.id) || (c.fromId === next.id && c.toId === curr.id)
+            );
+            if (!exists) {
+              newConnections.push({
+                id: `conn-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+                fromId: curr.id,
+                toId: next.id,
+                cemetery_id: activeCemeteryId,
+              });
+            }
+          }
+        }
+
+        if (newConnections.length > 0) {
+          setConnections((prev) => [...prev, ...newConnections]);
+        }
       }
     } catch (err) {
       console.error('Error duplicating multiple plots:', err);
@@ -1280,13 +1439,7 @@ export const EngineerWorkspacePage: React.FC = () => {
     let activePolygonCheck: [number, number][] = [];
     const activeBordersForPlacementCheck = plots.filter((p) => p.lot_type === 'border' && (p.cemetery_id || 'default-himlayan') === activeCemeteryId);
     if (activeBordersForPlacementCheck.length >= 3) {
-      const cLat = activeBordersForPlacementCheck.reduce((sum, p) => sum + (p.lat || 14.6720), 0) / activeBordersForPlacementCheck.length;
-      const cLng = activeBordersForPlacementCheck.reduce((sum, p) => sum + (p.lng || 121.0410), 0) / activeBordersForPlacementCheck.length;
-      const sorted = [...activeBordersForPlacementCheck].sort((a, b) => {
-        const angleA = Math.atan2((a.lat || 14.6720) - cLat, (a.lng || 121.0410) - cLng);
-        const angleB = Math.atan2((b.lat || 14.6720) - cLat, (b.lng || 121.0410) - cLng);
-        return angleA - angleB;
-      });
+      const sorted = sortBorderPlotsSequentially(activeBordersForPlacementCheck);
       activePolygonCheck = sorted.map((p) => [p.lat || 14.6720, p.lng || 121.0410] as [number, number]);
     } else if (activeBordersForPlacementCheck.length === 0 && polygonCoords.length >= 3) {
       activePolygonCheck = polygonCoords;
@@ -1332,20 +1485,6 @@ export const EngineerWorkspacePage: React.FC = () => {
       lotType = 'border';
       capacity = 1;
       price = 20000;
-
-      const existingBorders = plots.filter((p) => p.lot_type === 'border' && (p.cemetery_id || 'default-himlayan') === activeCemeteryId);
-      const allBorders = [...existingBorders, { lat: latlng.lat, lng: latlng.lng }];
-      if (allBorders.length >= 3) {
-        setNeedsBorderNode(false);
-        const cLat = allBorders.reduce((sum, p) => sum + (p.lat || 14.6720), 0) / allBorders.length;
-        const cLng = allBorders.reduce((sum, p) => sum + (p.lng || 121.0410), 0) / allBorders.length;
-        const sorted = [...allBorders].sort((a, b) => {
-          const angleA = Math.atan2((a.lat || 14.6720) - cLat, (a.lng || 121.0410) - cLng);
-          const angleB = Math.atan2((b.lat || 14.6720) - cLat, (b.lng || 121.0410) - cLng);
-          return angleA - angleB;
-        });
-        setPolygonCoords(sorted.map((b) => [b.lat || 0, b.lng || 0] as [number, number]));
-      }
     }
     
     const plotNumber = `${sec}-${totalCount + 101}`;
@@ -1366,8 +1505,46 @@ export const EngineerWorkspacePage: React.FC = () => {
     };
 
     // Optimistically update UI state immediately
-    setPlots((prev) => [optimisticPlot, ...prev]);
+    const updatedPlots = [optimisticPlot, ...plots];
+    setPlots(updatedPlots);
     setSelectedPlot(optimisticPlot);
+
+    if (tool === 'border') {
+      const existingBorders = updatedPlots.filter((p) => p.lot_type === 'border' && (p.cemetery_id || 'default-himlayan') === activeCemeteryId);
+      const allBorders = existingBorders;
+
+      if (allBorders.length >= 3) {
+        setNeedsBorderNode(false);
+      }
+
+      const nonBorderConnections = connections.filter(c => {
+        if (c.cemetery_id && c.cemetery_id !== activeCemeteryId) return true;
+        const f = updatedPlots.find(p => p.id === c.fromId);
+        const t = updatedPlots.find(p => p.id === c.toId);
+        const isBorderConn = f?.lot_type === 'border' && t?.lot_type === 'border';
+        return !isBorderConn;
+      });
+
+      if (allBorders.length >= 2) {
+        const sorted = sortBorderPlotsSequentially(allBorders);
+
+        const newBorderConns: Array<{ id: string; fromId: string; toId: string; cemetery_id: string }> = [];
+        for (let i = 0; i < sorted.length; i++) {
+          const curr = sorted[i];
+          const next = sorted[(i + 1) % sorted.length];
+          newBorderConns.push({
+            id: `conn-border-${Date.now()}-${i}-${Math.random().toString(36).substring(2, 6)}`,
+            fromId: curr.id,
+            toId: next.id,
+            cemetery_id: activeCemeteryId,
+          });
+        }
+        setConnections([...nonBorderConnections, ...newBorderConns]);
+        setPolygonCoords(sorted.map((b) => [b.lat || 0, b.lng || 0] as [number, number]));
+      } else {
+        setConnections(nonBorderConnections);
+      }
+    }
 
     // If placed node is a path or entrance node, check if it falls on any existing connection segment between two path nodes
     if (lotType === 'path' || lotType === 'entrance') {
@@ -1441,7 +1618,14 @@ export const EngineerWorkspacePage: React.FC = () => {
     }).then((res) => {
       if (res.data?.success && res.data.data) {
         const savedPlot = res.data.data;
-        setPlots((prev) => prev.map((p) => p.id === tempId ? savedPlot : p));
+        setPlots((prev) => {
+          if (!prev.some((p) => p.id === tempId)) {
+            // Plot was deleted by user before background save finished; delete the orphaned server record
+            apiClient.delete(`/plots/${savedPlot.id}`).catch(() => {});
+            return prev;
+          }
+          return prev.map((p) => p.id === tempId ? savedPlot : p);
+        });
         setSelectedPlot((prev) => prev && prev.id === tempId ? savedPlot : prev);
       }
     }).catch((err) => {
@@ -1582,6 +1766,23 @@ export const EngineerWorkspacePage: React.FC = () => {
 
   const handlePlotClickForConnection = (targetPlotId: string) => {
     if (!connectingNodeId || connectingNodeId === targetPlotId) return;
+    const sourcePlot = plots.find((p) => p.id === connectingNodeId);
+    const targetPlot = plots.find((p) => p.id === targetPlotId);
+    if (!sourcePlot || !targetPlot) return;
+
+    if (sourcePlot.lot_type === 'border') {
+      if (targetPlot.lot_type !== 'border') {
+        alert('Border nodes can only connect to other border nodes.');
+        setConnectingNodeId(null);
+        return;
+      }
+    }
+    if (sourcePlot.lot_type !== 'border' && targetPlot.lot_type === 'border') {
+      alert('Other nodes cannot connect to border nodes.');
+      setConnectingNodeId(null);
+      return;
+    }
+
     const exists = connections.some(
       (c) => (c.fromId === connectingNodeId && c.toId === targetPlotId) || (c.fromId === targetPlotId && c.toId === connectingNodeId)
     );
@@ -1709,6 +1910,52 @@ export const EngineerWorkspacePage: React.FC = () => {
       window.removeEventListener('storage', handleRemoteUpdate);
     };
   }, []);
+
+  // Automatically sync border connections and polygon coordinates for active cemetery
+  useEffect(() => {
+    if (!activeCemeteryId) return;
+    const cemeteryBorders = plots.filter(
+      (p) => p.lot_type === 'border' && (p.cemetery_id || 'default-himlayan') === activeCemeteryId
+    );
+
+    setConnections((prevConn) => {
+      const nonBorderConns = prevConn.filter((c) => {
+        if (c.cemetery_id && c.cemetery_id !== activeCemeteryId) return true;
+        const f = plots.find((p) => p.id === c.fromId);
+        const t = plots.find((p) => p.id === c.toId);
+        const isBorderConn = f?.lot_type === 'border' && t?.lot_type === 'border';
+        return !isBorderConn;
+      });
+
+      if (cemeteryBorders.length >= 2) {
+        const sorted = sortBorderPlotsSequentially(cemeteryBorders);
+
+        const newBorderConns: Array<{ id: string; fromId: string; toId: string; cemetery_id: string }> = [];
+        for (let i = 0; i < sorted.length; i++) {
+          const curr = sorted[i];
+          const next = sorted[(i + 1) % sorted.length];
+          newBorderConns.push({
+            id: `conn-border-${activeCemeteryId}-${i}-${curr.id}-${next.id}`,
+            fromId: curr.id,
+            toId: next.id,
+            cemetery_id: activeCemeteryId,
+          });
+        }
+        return [...nonBorderConns, ...newBorderConns];
+      } else {
+        return nonBorderConns;
+      }
+    });
+
+    if (cemeteryBorders.length >= 3) {
+      const sorted = sortBorderPlotsSequentially(cemeteryBorders);
+      setPolygonCoords(sorted.map((b) => [b.lat || 0, b.lng || 0] as [number, number]));
+      setNeedsBorderNode(false);
+    } else {
+      setPolygonCoords([]);
+      setNeedsBorderNode(true);
+    }
+  }, [plots, activeCemeteryId]);
 
   const handleSaveBoundary = async () => {
     setSaving(true);
@@ -2041,7 +2288,15 @@ export const EngineerWorkspacePage: React.FC = () => {
           />
           
           {(() => {
-            const activeOverlays = selectedPlots.length > 0 ? selectedPlots : (selectedPlot ? [selectedPlot] : []);
+            const activeOverlays = selectedPlots.length > 0 
+              ? [...selectedPlots].sort((a, b) => {
+                  const aIsBox = !['path', 'border', 'entrance'].includes(a.lot_type || '');
+                  const bIsBox = !['path', 'border', 'entrance'].includes(b.lot_type || '');
+                  if (aIsBox && !bIsBox) return -1;
+                  if (!aIsBox && bIsBox) return 1;
+                  return 0;
+                })
+              : (selectedPlot ? [selectedPlot] : []);
             return activeOverlays.map((p, idx) => (
               <PlotEditorOverlay 
                 key={p.id}
@@ -2052,24 +2307,53 @@ export const EngineerWorkspacePage: React.FC = () => {
                 onDelete={selectedPlots.length > 1 ? () => removeMultiplePlots(selectedPlots) : removePlot}
                 ignoreMapClickRef={ignoreMapClickRef}
                 hideControls={selectedPlots.length > 1 && idx !== 0}
+                activeGisTool={activeGisTool}
                  onUpdate={(id, updates) => {
                   const isMulti = selectedPlots.length > 1 && selectedPlots.some(item => item.id === id);
                   if (isMulti) {
                     if (Object.keys(dragStartRotationsRef.current).length === 0) {
                       const initialRotations: Record<string, number> = {};
+                      const initialPositions: Record<string, { lat: number; lng: number }> = {};
                       selectedPlots.forEach(item => {
                         initialRotations[item.id] = item.rotation || 0;
+                        initialPositions[item.id] = { lat: item.lat || 14.6720, lng: item.lng || 121.0410 };
                       });
                       dragStartRotationsRef.current = initialRotations;
+                      dragStartPlotsPositionsRef.current = initialPositions;
                     }
 
                     const deltaRotation = updates.rotation !== undefined ? (updates.rotation - (dragStartRotationsRef.current[id] || 0)) : 0;
+                    
+                    const positions = Object.values(dragStartPlotsPositionsRef.current) as Array<{ lat: number; lng: number }>;
+                    const cLat = positions.reduce((sum, p) => sum + p.lat, 0) / positions.length;
+                    const cLng = positions.reduce((sum, p) => sum + p.lng, 0) / positions.length;
+                    // Negate rad to convert from screen rotation (Y-down) to map coordinate rotation (latitude Y-up, clockwise)
+                    const rad = -(deltaRotation * Math.PI) / 180;
+
+                    const updatedPositionsMap = new Map<string, { lat: number; lng: number; rotation?: number }>();
+
+                    selectedPlots.forEach(item => {
+                       const initPos = dragStartPlotsPositionsRef.current[item.id] || { lat: item.lat || 14.6720, lng: item.lng || 121.0410 };
+                       const dLat = initPos.lat - cLat;
+                       const dLng = initPos.lng - cLng;
+                       const newLat = cLat + dLat * Math.cos(rad) + dLng * Math.sin(rad);
+                       const newLng = cLng - dLat * Math.sin(rad) + dLng * Math.cos(rad);
+                       const newRot = updates.rotation !== undefined ? ((dragStartRotationsRef.current[item.id] || 0) + deltaRotation) : item.rotation;
+
+                      updatedPositionsMap.set(item.id, { lat: newLat, lng: newLng, rotation: newRot });
+
+                      const marker = markerRefs.current.get(item.id);
+                      if (marker) {
+                        marker.setLatLng([newLat, newLng]);
+                      }
+                    });
 
                     setPlots(prev => prev.map(item => {
-                      if (selectedPlots.some(sp => sp.id === item.id)) {
-                        const nextItem = { ...item };
-                        if (updates.rotation !== undefined) {
-                          nextItem.rotation = (dragStartRotationsRef.current[item.id] || 0) + deltaRotation;
+                      const newCoords = updatedPositionsMap.get(item.id);
+                      if (newCoords) {
+                        const nextItem = { ...item, lat: newCoords.lat, lng: newCoords.lng };
+                        if (newCoords.rotation !== undefined) {
+                          nextItem.rotation = newCoords.rotation;
                         }
                         if (updates.width !== undefined) {
                           nextItem.width = updates.width;
@@ -2083,29 +2367,39 @@ export const EngineerWorkspacePage: React.FC = () => {
                     }));
 
                     setSelectedPlots(prev => prev.map(item => {
-                      const nextItem = { ...item };
-                      if (updates.rotation !== undefined) {
-                        nextItem.rotation = (dragStartRotationsRef.current[item.id] || 0) + deltaRotation;
+                      const newCoords = updatedPositionsMap.get(item.id);
+                      if (newCoords) {
+                        const nextItem = { ...item, lat: newCoords.lat, lng: newCoords.lng };
+                        if (newCoords.rotation !== undefined) {
+                          nextItem.rotation = newCoords.rotation;
+                        }
+                        if (updates.width !== undefined) {
+                          nextItem.width = updates.width;
+                        }
+                        if (updates.height !== undefined) {
+                          nextItem.height = updates.height;
+                        }
+                        return nextItem;
                       }
-                      if (updates.width !== undefined) {
-                        nextItem.width = updates.width;
-                      }
-                      if (updates.height !== undefined) {
-                        nextItem.height = updates.height;
-                      }
-                      return nextItem;
+                      return item;
                     }));
 
                     if ((updates as any)._isFinal) {
                       const { _isFinal, ...cleanUpdates } = updates as any;
                       selectedPlots.forEach(item => {
+                        const newCoords = updatedPositionsMap.get(item.id);
                         const nextClean = { ...cleanUpdates };
-                        if (cleanUpdates.rotation !== undefined) {
-                          nextClean.rotation = (dragStartRotationsRef.current[item.id] || 0) + deltaRotation;
+                        if (newCoords) {
+                          nextClean.lat = newCoords.lat;
+                          nextClean.lng = newCoords.lng;
+                          if (newCoords.rotation !== undefined) {
+                            nextClean.rotation = newCoords.rotation;
+                          }
                         }
                         updatePlotField(item.id, nextClean);
                       });
                       dragStartRotationsRef.current = {};
+                      dragStartPlotsPositionsRef.current = {};
                     }
                   } else {
                     setPlots(prev => prev.map(item => item.id === id ? { ...item, ...updates } : item));
@@ -2130,58 +2424,121 @@ export const EngineerWorkspacePage: React.FC = () => {
             maxNativeZoom={TILE_URLS[activeTile].maxNativeZoom}
           />
 
-          {/* Master Perimeter Polygon Overlay */}
+          {/* Master Perimeter Polygon Overlay (Clustered per distinct border group) */}
           {(() => {
             const borderPlots = plots.filter((p) => p.lot_type === 'border' && (p.cemetery_id || 'default-himlayan') === activeCemeteryId);
-            let activePolygonCoords: [number, number][] = [];
-
-            if (borderPlots.length >= 3) {
-              const cLat = borderPlots.reduce((sum, p) => sum + (p.lat || 14.6720), 0) / borderPlots.length;
-              const cLng = borderPlots.reduce((sum, p) => sum + (p.lng || 121.0410), 0) / borderPlots.length;
-              const sorted = [...borderPlots].sort((a, b) => {
-                const angleA = Math.atan2((a.lat || 14.6720) - cLat, (a.lng || 121.0410) - cLng);
-                const angleB = Math.atan2((b.lat || 14.6720) - cLat, (b.lng || 121.0410) - cLng);
-                return angleA - angleB;
-              });
-              activePolygonCoords = sorted.map((p) => [p.lat || 14.6720, p.lng || 121.0410] as [number, number]);
-            } else if (borderPlots.length === 0 && polygonCoords.length >= 3) {
-              activePolygonCoords = polygonCoords;
-            }
-
-            if (activePolygonCoords.length < 3) {
+            if (borderPlots.length === 0) {
+              if (polygonCoords.length >= 3) {
+                return (
+                  <Polygon
+                    positions={polygonCoords}
+                    pathOptions={{
+                      color: '#059669',
+                      fillColor: '#10b981',
+                      fillOpacity: 0.25,
+                      weight: 3.5,
+                      dashArray: '4, 8',
+                    }}
+                  />
+                );
+              }
               return null;
             }
 
+            // Group border plots into spatial / connected components clusters
+            const visited = new Set<string>();
+            const clusters: Plot[][] = [];
+            const adj = new Map<string, string[]>();
+            borderPlots.forEach(b => adj.set(b.id, []));
+            connections.forEach(conn => {
+              if (adj.has(conn.fromId) && adj.has(conn.toId)) {
+                adj.get(conn.fromId)!.push(conn.toId);
+                adj.get(conn.toId)!.push(conn.fromId);
+              }
+            });
+
+            borderPlots.forEach(startNode => {
+              if (!visited.has(startNode.id)) {
+                const cluster: Plot[] = [];
+                const queue: Plot[] = [startNode];
+                visited.add(startNode.id);
+
+                while (queue.length > 0) {
+                  const curr = queue.shift()!;
+                  cluster.push(curr);
+
+                  const neighbors = adj.get(curr.id) || [];
+                  neighbors.forEach(nId => {
+                    const nPlot = borderPlots.find(b => b.id === nId);
+                    if (nPlot && !visited.has(nPlot.id)) {
+                      visited.add(nPlot.id);
+                      queue.push(nPlot);
+                    }
+                  });
+
+
+                }
+                clusters.push(cluster);
+              }
+            });
+
             return (
               <>
-                <Polygon
-                  positions={activePolygonCoords}
-                  pathOptions={{
-                    color: '#059669',
-                    fillColor: '#10b981',
-                    fillOpacity: 0.25,
-                    weight: 3.5,
-                    dashArray: '4, 8',
-                  }}
-                />
+                {clusters.map((cluster, cIdx) => {
+                  let sortedCluster: Plot[] = [];
+                  const clusterIds = new Set(cluster.map(p => p.id));
+                  const startNode = cluster.reduce((min, p) => ((p.lng || 0) < (min.lng || 0) ? p : min), cluster[0]);
+                  const path: Plot[] = [];
+                  const pathVisited = new Set<string>();
 
-                {/* Connected Border Nodes Line */}
-                {borderPlots.length > 1 && (
-                  <Polyline
-                    positions={
-                      activePolygonCoords.length >= 3
-                        ? [...activePolygonCoords, activePolygonCoords[0]]
-                        : borderPlots.map((p) => [p.lat || 14.6720, p.lng || 121.0410] as [number, number])
-                    }
-                    pathOptions={{
-                      color: '#10b981',
-                      weight: 4,
-                      dashArray: '4, 4',
-                      lineCap: 'round',
-                      lineJoin: 'round',
-                    }}
-                  />
-                )}
+                  let currId: string | null = startNode.id;
+                  while (currId && clusterIds.has(currId) && !pathVisited.has(currId)) {
+                    pathVisited.add(currId);
+                    const currPlot = cluster.find(p => p.id === currId);
+                    if (currPlot) path.push(currPlot);
+
+                    const neighbors = adj.get(currId) || [];
+                    const nextId = neighbors.find(nId => clusterIds.has(nId) && !pathVisited.has(nId));
+                    currId = nextId || null;
+                  }
+
+                  if (path.length === cluster.length) {
+                    sortedCluster = path;
+                  } else {
+                    sortedCluster = sortBorderPlotsSequentially(cluster);
+                  }
+
+                  const polyCoords: [number, number][] = sortedCluster.map((p) => [p.lat || 14.6720, p.lng || 121.0410] as [number, number]);
+
+                  if (polyCoords.length < 2) return null;
+
+                  return (
+                    <React.Fragment key={`cluster-${cIdx}`}>
+                      {polyCoords.length >= 3 && (
+                        <Polygon
+                          positions={polyCoords}
+                          pathOptions={{
+                            color: '#059669',
+                            fillColor: '#10b981',
+                            fillOpacity: 0.25,
+                            weight: 3.5,
+                            dashArray: '4, 8',
+                          }}
+                        />
+                      )}
+                      <Polyline
+                        positions={polyCoords.length >= 3 ? [...polyCoords, polyCoords[0]] : polyCoords}
+                        pathOptions={{
+                          color: '#10b981',
+                          weight: 4,
+                          dashArray: '4, 4',
+                          lineCap: 'round',
+                          lineJoin: 'round',
+                        }}
+                      />
+                    </React.Fragment>
+                  );
+                })}
               </>
             );
           })()}
@@ -2288,6 +2645,23 @@ export const EngineerWorkspacePage: React.FC = () => {
                       layer.setLatLng([initialLat + deltaLat, initialLng + deltaLng]);
                     });
                   }
+
+                  const initialPositions = dragStartPlotsPositionsRef.current;
+                  if (initialPositions && Object.keys(initialPositions).length > 0) {
+                    setPlots((prev) =>
+                      prev.map((p) => {
+                        const init = initialPositions[p.id];
+                        if (init) {
+                          return {
+                            ...p,
+                            lat: init.lat + deltaLat,
+                            lng: init.lng + deltaLng,
+                          };
+                        }
+                        return p;
+                      })
+                    );
+                  }
                 },
                 dragend: async (e) => {
                   if (!dragStartLatLngRef.current) return;
@@ -2301,13 +2675,7 @@ export const EngineerWorkspacePage: React.FC = () => {
                   let activePolygon: [number, number][] = [];
                   const activeBorders = plots.filter((p) => p.lot_type === 'border' && (p.cemetery_id || 'default-himlayan') === activeCemeteryId);
                   if (activeBorders.length >= 3) {
-                    const cLat = activeBorders.reduce((sum, p) => sum + (p.lat || 14.6720), 0) / activeBorders.length;
-                    const cLng = activeBorders.reduce((sum, p) => sum + (p.lng || 121.0410), 0) / activeBorders.length;
-                    const sorted = [...activeBorders].sort((a, b) => {
-                      const angleA = Math.atan2((a.lat || 14.6720) - cLat, (a.lng || 121.0410) - cLng);
-                      const angleB = Math.atan2((b.lat || 14.6720) - cLat, (b.lng || 121.0410) - cLng);
-                      return angleA - angleB;
-                    });
+                    const sorted = sortBorderPlotsSequentially(activeBorders);
                     activePolygon = sorted.map((p) => [p.lat || 14.6720, p.lng || 121.0410] as [number, number]);
                   } else if (activeBorders.length === 0 && polygonCoords.length >= 3) {
                     activePolygon = polygonCoords;
@@ -2321,6 +2689,22 @@ export const EngineerWorkspacePage: React.FC = () => {
                         dragOtherMarkersRef.current.forEach(({ layer, initialLat, initialLng }) => {
                           layer.setLatLng([initialLat, initialLng]);
                         });
+                      }
+                      const initialPositions = dragStartPlotsPositionsRef.current;
+                      if (initialPositions && Object.keys(initialPositions).length > 0) {
+                        setPlots((prev) =>
+                          prev.map((p) => {
+                            const init = initialPositions[p.id];
+                            if (init) {
+                              return {
+                                ...p,
+                                lat: init.lat,
+                                lng: init.lng,
+                              };
+                            }
+                            return p;
+                          })
+                        );
                       }
                       alert('Cannot move plot outside the created cemetery border perimeter.');
                       dragStartLatLngRef.current = null;
@@ -2770,8 +3154,24 @@ export const EngineerWorkspacePage: React.FC = () => {
           const isNode = activePlot.lot_type === 'path' || activePlot.lot_type === 'border' || activePlot.lot_type === 'entrance';
           const cardWidth = isNode ? 240 : 310;
           const cardHeight = isNode ? 120 : 380;
-          const leftPos = Math.max(10, Math.min(plotContextMenu.x + 12, window.innerWidth - cardWidth - 16));
-          const topPos = Math.max(10, Math.min(plotContextMenu.y - 20, window.innerHeight - cardHeight - 16));
+
+          let currentX = plotContextMenu.x;
+          let currentY = plotContextMenu.y;
+
+          if (map) {
+            try {
+              const latLng = [activePlot.lat || 14.6720, activePlot.lng || 121.0410] as [number, number];
+              const containerPoint = map.latLngToContainerPoint(latLng);
+              const rect = map.getContainer().getBoundingClientRect();
+              currentX = rect.left + containerPoint.x;
+              currentY = rect.top + containerPoint.y;
+            } catch (e) {
+              // fallback
+            }
+          }
+
+          const leftPos = Math.max(10, Math.min(currentX + 12, window.innerWidth - cardWidth - 16));
+          const topPos = Math.max(10, Math.min(currentY - 20, window.innerHeight - cardHeight - 16));
 
           if (isNode) {
             return (
@@ -2803,7 +3203,34 @@ export const EngineerWorkspacePage: React.FC = () => {
                 </div>
 
                 <div className="flex flex-col gap-2">
-                  {(activePlot.lot_type === 'path' || activePlot.lot_type === 'entrance') && (
+                  {(() => {
+                    const nodeConnections = connections.filter(c => c.fromId === activePlot.id || c.toId === activePlot.id);
+                    return nodeConnections.length > 0 ? (
+                      <button
+                        onClick={() => {
+                          saveToUndoStack();
+                          setConnections((prev) => prev.filter(c => c.fromId !== activePlot.id && c.toId !== activePlot.id));
+                          if (activePlot.lot_type === 'border') {
+                            const remainingBorders = plots.filter(p => p.lot_type === 'border' && p.id !== activePlot.id && (p.cemetery_id || 'default-himlayan') === activeCemeteryId);
+                            if (remainingBorders.length < 3) {
+                              setPolygonCoords([]);
+                              setNeedsBorderNode(true);
+                            } else {
+                              const sorted = sortBorderPlotsSequentially(remainingBorders);
+                              setPolygonCoords(sorted.map(b => [b.lat || 0, b.lng || 0] as [number, number]));
+                            }
+                          }
+                          setPlotContextMenu(null);
+                        }}
+                        className="w-full bg-amber-600 hover:bg-amber-700 text-white font-bold py-2 rounded-xl text-xs text-center transition-all cursor-pointer shadow-xs flex items-center justify-center gap-1.5"
+                      >
+                        <Unlink className="w-3.5 h-3.5" />
+                        <span>Disconnect ({nodeConnections.length})</span>
+                      </button>
+                    ) : null;
+                  })()}
+
+                  {(activePlot.lot_type === 'path' || activePlot.lot_type === 'entrance' || activePlot.lot_type === 'border') && (
                     <button
                       onClick={() => {
                         setConnectingNodeId(activePlot.id);
