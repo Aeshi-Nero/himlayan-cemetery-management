@@ -203,6 +203,38 @@ const sortBorderPlotsSequentially = (borderPlots: Plot[]): Plot[] => {
   return tour.map(idx => borderPlots[idx]);
 };
 
+// Helper: parse deceased occupant names array from plot object or notes
+const getPlotDeceasedNames = (plot: Plot): string[] => {
+  if (plot.deceased_names && Array.isArray(plot.deceased_names) && plot.deceased_names.length > 0) {
+    return plot.deceased_names;
+  }
+  if (plot.notes) {
+    try {
+      const parsed = JSON.parse(plot.notes);
+      if (parsed && Array.isArray(parsed.deceased_names) && parsed.deceased_names.length > 0) {
+        return parsed.deceased_names;
+      }
+    } catch {
+      // not json
+    }
+  }
+  return plot.deceased_name ? [plot.deceased_name] : [];
+};
+
+const calculateHaversineDistance = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
+  const R = 6371000; // Earth radius in meters
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return Math.round(R * c);
+};
+
 export const MemorialMapPage: React.FC = () => {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
@@ -226,8 +258,43 @@ export const MemorialMapPage: React.FC = () => {
   const [totalDistance, setTotalDistance] = useState<number | null>(null);
   const [loadingPath, setLoadingPath] = useState(false);
 
+  // Extended path to connect from the nearest path node (on the road) directly to the selected plot's coordinates
+  const extendedPathSteps = useMemo(() => {
+    if (!selectedPlot || pathSteps.length === 0) return pathSteps;
+    
+    const lastStep = pathSteps[pathSteps.length - 1];
+    const targetNodeId = selectedPlot.nearest_path_node_id || 'node-1';
+    
+    if (lastStep.nodeId === targetNodeId) {
+      const pLat = selectedPlot.lat || 14.6720;
+      const pLng = selectedPlot.lng || 121.0410;
+      
+      const extraDist = calculateHaversineDistance(lastStep.lat, lastStep.lng, pLat, pLng);
+      
+      if (extraDist > 1) {
+        return [
+          ...pathSteps,
+          {
+            nodeId: `plot-connect-${selectedPlot.id}`,
+            lat: pLat,
+            lng: pLng,
+            label: `Walk directly to Lot #${selectedPlot.plot_number} (${selectedDeceasedName || selectedPlot.deceased_name || 'Resting Place'})`,
+            distanceFromPrevious: extraDist
+          }
+        ];
+      }
+    }
+    return pathSteps;
+  }, [pathSteps, selectedPlot]);
+
+  const extendedTotalDistance = useMemo(() => {
+    if (extendedPathSteps === pathSteps) return totalDistance;
+    return extendedPathSteps.reduce((acc, step) => acc + step.distanceFromPrevious, 0);
+  }, [extendedPathSteps, pathSteps, totalDistance]);
+
   // Search Loved One state
   const [mapSearchQuery, setMapSearchQuery] = useState('');
+  const [selectedDeceasedName, setSelectedDeceasedName] = useState<string | null>(null);
   const [searchFeedback, setSearchFeedback] = useState<string | null>(null);
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -285,28 +352,43 @@ export const MemorialMapPage: React.FC = () => {
 
     // 2. Search Plots directly
     plots.forEach((p) => {
-      if (seenPlotIds.has(p.id)) return;
-      const burialRecord = burials.find((b) => b.plot_id === p.id && b.deceased_name);
-      const decName = p.deceased_name || burialRecord?.deceased_name;
+      const deceasedNames = getPlotDeceasedNames(p).filter((n) => n && n.trim().length > 0);
+      const matchedDeceasedName = deceasedNames.find((name) => name.toLowerCase().includes(query));
+
       const inqName = p.inquirer_name;
       const pNum = p.plot_number;
       const sec = p.section;
 
-      if (
-        (decName && decName.toLowerCase().includes(query)) ||
+      if (matchedDeceasedName) {
+        if (!seenPlotIds.has(p.id)) {
+          results.push({
+            id: `plot-deceased-${p.id}-${matchedDeceasedName}`,
+            name: matchedDeceasedName,
+            plotNumber: pNum,
+            section: sec,
+            type: 'deceased',
+            plot: p,
+            dateStr: p.burial_date ? new Date(p.burial_date).toLocaleDateString() : undefined,
+          });
+          seenPlotIds.add(p.id);
+        }
+      } else if (
         (inqName && inqName.toLowerCase().includes(query)) ||
         pNum.toLowerCase().includes(query) ||
         sec.toLowerCase().includes(query)
       ) {
-        results.push({
-          id: `plot-${p.id}`,
-          name: decName || (inqName ? `${inqName} (Reserved)` : `Grave Lot #${pNum}`),
-          plotNumber: pNum,
-          section: sec,
-          type: decName ? 'deceased' : 'plot',
-          plot: p,
-          dateStr: p.burial_date ? new Date(p.burial_date).toLocaleDateString() : undefined,
-        });
+        if (!seenPlotIds.has(p.id)) {
+          results.push({
+            id: `plot-${p.id}`,
+            name: inqName ? `${inqName} (Reserved)` : `Grave Lot #${pNum}`,
+            plotNumber: pNum,
+            section: sec,
+            type: inqName ? 'deceased' : 'plot',
+            plot: p,
+            dateStr: p.burial_date ? new Date(p.burial_date).toLocaleDateString() : undefined,
+          });
+          seenPlotIds.add(p.id);
+        }
       }
     });
 
@@ -318,11 +400,17 @@ export const MemorialMapPage: React.FC = () => {
     plot: Plot;
     section: string;
     plotNumber: string;
+    type?: 'deceased' | 'plot';
   }) => {
     setMapSearchQuery(suggestion.name);
     setIsDropdownOpen(false);
 
     setSelectedPlot(suggestion.plot);
+    if (suggestion.type === 'deceased') {
+      setSelectedDeceasedName(suggestion.name);
+    } else {
+      setSelectedDeceasedName(null);
+    }
     const pLat = suggestion.plot.lat || 14.6720;
     const pLng = suggestion.plot.lng || 121.0410;
     setFlyToCenter([pLat, pLng]);
@@ -352,6 +440,7 @@ export const MemorialMapPage: React.FC = () => {
 
   const handleClearSelection = () => {
     setSelectedPlot(null);
+    setSelectedDeceasedName(null);
     setToNodeId('');
     setPathSteps([]);
     setTotalDistance(null);
@@ -361,6 +450,7 @@ export const MemorialMapPage: React.FC = () => {
 
   const handleDownloadOfflinePass = () => {
     const deceasedName =
+      selectedDeceasedName ||
       selectedBurial?.deceased_name ||
       selectedPlot?.deceased_name ||
       selectedPlot?.inquirer_name ||
@@ -388,8 +478,8 @@ export const MemorialMapPage: React.FC = () => {
         })
       : 'October 24, 2021';
 
-    const stepsList = pathSteps.length > 0
-      ? pathSteps
+    const stepsList = extendedPathSteps.length > 0
+      ? extendedPathSteps
           .map(
             (step, i) =>
               `<li style="margin-bottom: 6px;"><strong>Step ${i + 1}:</strong> ${step.label} (${step.distanceFromPrevious} meters)</li>`
@@ -441,7 +531,7 @@ export const MemorialMapPage: React.FC = () => {
     </div>
     <div class="location-box">
       <span>Section ${selectedPlot?.section || 'A'} • Lot #${selectedPlot?.plot_number || 'A-01'}</span>
-      <span>${totalDistance ? `${totalDistance}m Walking Distance` : 'Himlayan Memorial Park'}</span>
+      <span>${extendedTotalDistance ? `${extendedTotalDistance}m Walking Distance` : 'Himlayan Memorial Park'}</span>
     </div>
     <div class="qr-section">
       <img src="${qrImageUrl}" alt="Offline Pass QR Code" />
@@ -560,24 +650,41 @@ export const MemorialMapPage: React.FC = () => {
       deceasedInfo = matchedBurial.deceased_name;
     }
 
-    // 2. Check plots directly (deceased_name, inquirer_name, plot_number, section, notes)
+    // 2. Check plots directly (including nested deceased occupant arrays/JSON notes)
     if (!matchedPlot) {
-      matchedPlot = plotList.find(
-        (p) =>
-          (p.deceased_name && p.deceased_name.toLowerCase().includes(q)) ||
-          (p.inquirer_name && p.inquirer_name.toLowerCase().includes(q)) ||
-          p.plot_number.toLowerCase() === q ||
-          p.plot_number.toLowerCase().includes(q) ||
-          p.section.toLowerCase().includes(q) ||
-          (p.notes && p.notes.toLowerCase().includes(q))
-      );
-      if (matchedPlot) {
-        deceasedInfo = matchedPlot.deceased_name || matchedPlot.inquirer_name || null;
+      for (const p of plotList) {
+        const deceasedNames = getPlotDeceasedNames(p).filter((n) => n && n.trim().length > 0);
+        const match = deceasedNames.find((n) => n.toLowerCase().includes(q));
+        if (match) {
+          matchedPlot = p;
+          deceasedInfo = match;
+          break;
+        }
+      }
+
+      if (!matchedPlot) {
+        matchedPlot = plotList.find(
+          (p) =>
+            (p.deceased_name && p.deceased_name.toLowerCase().includes(q)) ||
+            (p.inquirer_name && p.inquirer_name.toLowerCase().includes(q)) ||
+            p.plot_number.toLowerCase() === q ||
+            p.plot_number.toLowerCase().includes(q) ||
+            p.section.toLowerCase().includes(q) ||
+            (p.notes && p.notes.toLowerCase().includes(q))
+        );
+        if (matchedPlot) {
+          deceasedInfo = matchedPlot.deceased_name || matchedPlot.inquirer_name || null;
+        }
       }
     }
 
     if (matchedPlot) {
       setSelectedPlot(matchedPlot);
+      if (deceasedInfo) {
+        setSelectedDeceasedName(deceasedInfo);
+      } else {
+        setSelectedDeceasedName(null);
+      }
       setIsSidebarCollapsed(false);
       const pLat = matchedPlot.lat || 14.6720;
       const pLng = matchedPlot.lng || 121.0410;
@@ -606,7 +713,7 @@ export const MemorialMapPage: React.FC = () => {
     executeDeceasedSearch(mapSearchQuery);
   };
 
-  const polylinePositions: [number, number][] = pathSteps.map((step) => [step.lat, step.lng]);
+  const polylinePositions: [number, number][] = extendedPathSteps.map((step) => [step.lat, step.lng]);
 
   const defaultCenter: [number, number] = [14.6710, 121.0415];
 
@@ -709,54 +816,78 @@ export const MemorialMapPage: React.FC = () => {
               maxNativeZoom={20}
             />
 
-            {/* Master Perimeter Polygon Overlay */}
+            {/* Master Perimeter Polygon Overlay (grouped by cemetery_id to avoid crossover lines) */}
             {(() => {
               const borderPlots = plots.filter((p) => p.lot_type === 'border');
-              if (borderPlots.length >= 3) {
-                const sorted = sortBorderPlotsSequentially(borderPlots);
-                const coords = sorted.map((p) => [p.lat || 14.6720, p.lng || 121.0410] as [number, number]);
-                return (
-                  <Polygon
-                    positions={coords}
-                    pathOptions={{
-                      color: '#0d9488',
-                      weight: 3,
-                      fillColor: '#14b8a6',
-                      fillOpacity: 0.12,
-                      dashArray: '6, 6',
-                    }}
-                  />
-                );
-              }
-              return null;
+              const groupedBorders: { [key: string]: Plot[] } = {};
+              borderPlots.forEach((p) => {
+                const cid = p.cemetery_id || 'default-himlayan';
+                if (!groupedBorders[cid]) {
+                  groupedBorders[cid] = [];
+                }
+                groupedBorders[cid].push(p);
+              });
+
+              return Object.entries(groupedBorders).map(([cid, group]) => {
+                if (group.length >= 3) {
+                  const sorted = sortBorderPlotsSequentially(group);
+                  const coords = sorted.map((p) => [p.lat || 14.6720, p.lng || 121.0410] as [number, number]);
+                  return (
+                    <Polygon
+                      key={`border-poly-${cid}`}
+                      positions={coords}
+                      pathOptions={{
+                        color: '#0d9488',
+                        weight: 3,
+                        fillColor: '#14b8a6',
+                        fillOpacity: 0.12,
+                        dashArray: '6, 6',
+                      }}
+                    />
+                  );
+                }
+                return null;
+              });
             })()}
 
-            {/* Connected Path Nodes Line */}
+            {/* Connected Path Nodes Line (grouped by cemetery_id to avoid crossover lines) */}
             {(() => {
               const pathPlots = plots.filter((p) => p.lot_type === 'path' || p.lot_type === 'entrance');
-              if (pathPlots.length > 1) {
-                const sorted = [...pathPlots].sort((a, b) => {
-                  if (a.lot_type === 'entrance' && b.lot_type !== 'entrance') return -1;
-                  if (b.lot_type === 'entrance' && a.lot_type !== 'entrance') return 1;
-                  const numA = parseInt(a.plot_number.split('-')[1] || '0', 10);
-                  const numB = parseInt(b.plot_number.split('-')[1] || '0', 10);
-                  if (numA && numB) return numA - numB;
-                  return plots.indexOf(a) - plots.indexOf(b);
-                });
-                return (
-                  <Polyline
-                    positions={sorted.map((p) => [p.lat || 14.6720, p.lng || 121.0410] as [number, number])}
-                    pathOptions={{
-                      color: '#14b8a6',
-                      weight: 3.5,
-                      dashArray: '6, 6',
-                      lineCap: 'round',
-                      lineJoin: 'round',
-                    }}
-                  />
-                );
-              }
-              return null;
+              const groupedPaths: { [key: string]: Plot[] } = {};
+              pathPlots.forEach((p) => {
+                const cid = p.cemetery_id || 'default-himlayan';
+                if (!groupedPaths[cid]) {
+                  groupedPaths[cid] = [];
+                }
+                groupedPaths[cid].push(p);
+              });
+
+              return Object.entries(groupedPaths).map(([cid, group]) => {
+                if (group.length > 1) {
+                  const sorted = [...group].sort((a, b) => {
+                    if (a.lot_type === 'entrance' && b.lot_type !== 'entrance') return -1;
+                    if (b.lot_type === 'entrance' && a.lot_type !== 'entrance') return 1;
+                    const numA = parseInt(a.plot_number.split('-')[1] || '0', 10);
+                    const numB = parseInt(b.plot_number.split('-')[1] || '0', 10);
+                    if (numA && numB) return numA - numB;
+                    return plots.indexOf(a) - plots.indexOf(b);
+                  });
+                  return (
+                    <Polyline
+                      key={`path-line-${cid}`}
+                      positions={sorted.map((p) => [p.lat || 14.6720, p.lng || 121.0410] as [number, number])}
+                      pathOptions={{
+                        color: '#14b8a6',
+                        weight: 3.5,
+                        dashArray: '6, 6',
+                        lineCap: 'round',
+                        lineJoin: 'round',
+                      }}
+                    />
+                  );
+                }
+                return null;
+              });
             })()}
 
             {/* Gate / Node Markers */}
@@ -834,6 +965,12 @@ export const MemorialMapPage: React.FC = () => {
                   eventHandlers={{
                     click: () => {
                       setSelectedPlot(plot);
+                      const names = getPlotDeceasedNames(plot).filter((n) => n && n.trim().length > 0);
+                      if (names.length > 0) {
+                        setSelectedDeceasedName(names[0]);
+                      } else {
+                        setSelectedDeceasedName(null);
+                      }
                       setFlyToCenter([pLat, pLng]);
                       setFlyToZoom(19);
                     },
@@ -1186,7 +1323,8 @@ export const MemorialMapPage: React.FC = () => {
                 </div>
                 <div>
                   <h3 className="text-lg font-bold font-heading text-white">
-                    {selectedBurial?.deceased_name ||
+                    {selectedDeceasedName ||
+                      selectedBurial?.deceased_name ||
                       selectedPlot?.deceased_name ||
                       selectedPlot?.inquirer_name ||
                       (selectedPlot ? `Grave Lot #${selectedPlot.plot_number}` : 'Selected Record')}
@@ -1222,6 +1360,42 @@ export const MemorialMapPage: React.FC = () => {
                     </span>
                   </div>
                 </div>
+
+                {selectedPlot && (() => {
+                  const occupantNames = getPlotDeceasedNames(selectedPlot).filter((n) => n && n.trim().length > 0);
+                  if (occupantNames.length > 1) {
+                    return (
+                      <div className="mt-2 pt-2 border-t border-emerald-800/50">
+                        <span className="text-[10px] uppercase tracking-wider text-emerald-400 font-bold block mb-1">
+                          Stacked Lot Occupants ({occupantNames.length}):
+                        </span>
+                        <div className="space-y-1">
+                          {occupantNames.map((name, idx) => (
+                            <button
+                              key={idx}
+                              type="button"
+                              onClick={() => setSelectedDeceasedName(name)}
+                              className={`w-full text-left text-xs px-2.5 py-1.5 rounded-lg cursor-pointer transition-all flex items-center justify-between border ${
+                                selectedDeceasedName === name
+                                  ? 'bg-emerald-800/80 text-white font-bold border-emerald-500 shadow-sm'
+                                  : 'bg-emerald-950/40 border-transparent hover:bg-emerald-950/80 text-emerald-200 hover:text-white'
+                              }`}
+                            >
+                              <span className="truncate">🌹 Level {idx + 1}: {name}</span>
+                              {selectedDeceasedName === name && (
+                                <span className="text-[9px] bg-emerald-600 border border-emerald-400 px-1.5 py-0.2 rounded font-bold uppercase shrink-0">
+                                  Active
+                                </span>
+                              )}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  }
+                  return null;
+                })()}
+
                 <div className="pt-2 border-t border-emerald-800/80 flex items-center justify-between text-xs">
                   <div className="flex items-center gap-1.5 text-slate-300">
                     <MapPin className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
@@ -1240,7 +1414,8 @@ export const MemorialMapPage: React.FC = () => {
                       window.location.origin +
                         '/memorial-map?search=' +
                         encodeURIComponent(
-                          selectedBurial?.deceased_name ||
+                          selectedDeceasedName ||
+                            selectedBurial?.deceased_name ||
                             selectedPlot?.deceased_name ||
                             selectedPlot?.inquirer_name ||
                             `Lot #${selectedPlot?.plot_number || 'A-01'}`
@@ -1285,16 +1460,16 @@ export const MemorialMapPage: React.FC = () => {
               </div>
 
               {/* Turn-by-Turn Pathfinding Result */}
-              {totalDistance !== null && pathSteps.length > 0 && (
+              {extendedTotalDistance !== null && extendedPathSteps.length > 0 && (
                 <div className="bg-emerald-50/80 border border-emerald-200 rounded-2xl p-4 space-y-3">
                   <div className="flex items-center justify-between border-b border-emerald-200 pb-2">
                     <span className="text-xs font-bold text-emerald-800 uppercase tracking-wider">Total Distance</span>
-                    <span className="text-sm font-bold font-heading text-slate-900">{totalDistance} meters</span>
+                    <span className="text-sm font-bold font-heading text-slate-900">{extendedTotalDistance} meters</span>
                   </div>
 
                   <div className="space-y-2 max-h-40 overflow-y-auto pr-1">
                     <span className="text-[11px] font-semibold text-slate-600 block">Turn-by-Turn Steps:</span>
-                    {pathSteps.map((step, idx) => (
+                    {extendedPathSteps.map((step, idx) => (
                       <div key={idx} className="flex items-start gap-2 text-xs text-slate-800">
                         <div className="w-5 h-5 rounded-full bg-emerald-100 border border-emerald-300 text-emerald-800 flex items-center justify-center text-[10px] font-bold shrink-0 mt-0.5">
                           {idx + 1}

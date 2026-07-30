@@ -178,7 +178,7 @@ export const DashboardPage: React.FC = () => {
                   <span className="text-xs text-rose-500 font-semibold">requires reply</span>
                 </div>
                 <span className="text-[10px] text-slate-500 block">
-                  {inquiries.filter(i => i.status === 'reviewed').length} reviewed & resolved
+                   {inquiries.filter(i => i.status === 'completed').length} reviewed & resolved
                 </span>
               </div>
               <div className="w-12 h-12 rounded-2xl bg-rose-50 border border-rose-100 flex items-center justify-center text-rose-600">
@@ -652,7 +652,7 @@ export const DashboardPage: React.FC = () => {
                     <YAxis stroke="#94a3b8" fontSize={10} tickLine={false} axisLine={false} tickFormatter={(val) => `₱${val/1000}k`} />
                     <Tooltip
                       contentStyle={{ backgroundColor: '#ffffff', borderColor: '#e2e8f0', borderRadius: '12px', fontSize: '12px', color: '#0f172a', boxShadow: '0 4px 12px rgba(0,0,0,0.05)' }}
-                      formatter={(value: number) => [`₱${value.toLocaleString()}`, 'Revenue']}
+                      formatter={(value) => [`₱${Number(value).toLocaleString()}`, 'Revenue']}
                     />
                     <Line type="monotone" dataKey="revenue" stroke="#059669" strokeWidth={3} dot={{ r: 4, fill: '#059669', strokeWidth: 2, stroke: '#fff' }} activeDot={{ r: 6 }} />
                   </LineChart>

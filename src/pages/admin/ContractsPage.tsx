@@ -21,7 +21,7 @@ import {
   Layers
 } from 'lucide-react';
 import { apiClient } from '../../api/client';
-import { Contract, Client, Plot } from '../../types';
+import { Contract, Client, Plot, ContractStatus } from '../../types';
 
 export const ContractsPage: React.FC = () => {
   const [contracts, setContracts] = useState<Contract[]>([]);
@@ -61,7 +61,7 @@ export const ContractsPage: React.FC = () => {
   const [editTotalAmount, setEditTotalAmount] = useState('');
   const [editAmountPaid, setEditAmountPaid] = useState('');
   const [editPaymentType, setEditPaymentType] = useState('cash');
-  const [editStatus, setEditStatus] = useState<'active' | 'fully_paid' | 'cancelled'>('active');
+  const [editStatus, setEditStatus] = useState<ContractStatus>('active');
   const [editDeathCertificateNumber, setEditDeathCertificateNumber] = useState('');
 
   // Import State
@@ -806,7 +806,7 @@ export const ContractsPage: React.FC = () => {
                   <label className="block text-[11px] font-bold text-slate-600 mb-1">Deed Status *</label>
                   <select
                     value={editStatus}
-                    onChange={(e) => setEditStatus(e.target.value as any)}
+                    onChange={(e) => setEditStatus(e.target.value as ContractStatus)}
                     className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 text-slate-900 cursor-pointer"
                   >
                     <option value="active">Active (Installment)</option>

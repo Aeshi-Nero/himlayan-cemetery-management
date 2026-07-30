@@ -33,6 +33,24 @@ import { Navbar } from '../components/Navbar';
 import { apiClient } from '../api/client';
 import { getMapUsageCount, incrementMapUsageCount } from '../utils/mapUsageTracker';
 
+// Helper: parse deceased occupant names array from plot object or notes
+const getPlotDeceasedNames = (plot: any): string[] => {
+  if (plot.deceased_names && Array.isArray(plot.deceased_names) && plot.deceased_names.length > 0) {
+    return plot.deceased_names;
+  }
+  if (plot.notes) {
+    try {
+      const parsed = JSON.parse(plot.notes);
+      if (parsed && Array.isArray(parsed.deceased_names) && parsed.deceased_names.length > 0) {
+        return parsed.deceased_names;
+      }
+    } catch {
+      // not json
+    }
+  }
+  return plot.deceased_name ? [plot.deceased_name] : [];
+};
+
 // Cemetery Pictures
 import cemeteryLawnImg from '../assets/images/cemetery_lawn_gardens_1784913858158.jpg';
 import mausoleumImg from '../assets/images/mausoleum_architecture_1784913872418.jpg';
@@ -216,6 +234,7 @@ export const LandingPage: React.FC = () => {
     }> = [];
     const seenPlots = new Set<string>();
 
+    // 1. Search Burial records
     allBurials.forEach((b) => {
       if (b.deceased_name && b.deceased_name.toLowerCase().includes(q)) {
         const p = allPlots.find((plt) => plt.id === b.plot_id);
@@ -232,27 +251,41 @@ export const LandingPage: React.FC = () => {
       }
     });
 
+    // 2. Search Plots directly
     allPlots.forEach((p) => {
-      if (seenPlots.has(p.id)) return;
-      const burialRecord = allBurials.find((b) => b.plot_id === p.id && b.deceased_name);
-      const decName = p.deceased_name || burialRecord?.deceased_name;
+      const deceasedNames = getPlotDeceasedNames(p).filter((n) => n && n.trim().length > 0);
+      const matchedDeceasedName = deceasedNames.find((name) => name.toLowerCase().includes(q));
+
       const inqName = p.inquirer_name;
       const pNum = p.plot_number;
       const sec = p.section;
 
-      if (
-        (decName && decName.toLowerCase().includes(q)) ||
+      if (matchedDeceasedName) {
+        if (!seenPlots.has(p.id)) {
+          results.push({
+            id: `plot-deceased-${p.id}-${matchedDeceasedName}`,
+            name: matchedDeceasedName,
+            plotNumber: pNum,
+            section: sec,
+            type: 'deceased',
+          });
+          seenPlots.add(p.id);
+        }
+      } else if (
         (inqName && inqName.toLowerCase().includes(q)) ||
         (pNum && pNum.toLowerCase().includes(q)) ||
         (sec && sec.toLowerCase().includes(q))
       ) {
-        results.push({
-          id: `plot-${p.id}`,
-          name: decName || (inqName ? `${inqName} (Reserved)` : `Grave Lot #${pNum}`),
-          plotNumber: pNum,
-          section: sec,
-          type: decName ? 'deceased' : 'plot',
-        });
+        if (!seenPlots.has(p.id)) {
+          results.push({
+            id: `plot-${p.id}`,
+            name: inqName ? `${inqName} (Reserved)` : `Grave Lot #${pNum}`,
+            plotNumber: pNum,
+            section: sec,
+            type: inqName ? 'deceased' : 'plot',
+          });
+          seenPlots.add(p.id);
+        }
       }
     });
 
@@ -291,7 +324,7 @@ export const LandingPage: React.FC = () => {
       <Navbar />
 
       {/* SECTION 1: HERO */}
-      <section className="relative z-20 min-h-[90vh] sm:min-h-[100vh] w-full bg-emerald-950 flex flex-col items-center justify-start pt-64 sm:pt-72 md:pt-84 pb-16">
+      <section className="relative z-20 min-h-[90vh] sm:min-h-[100vh] w-full bg-emerald-950 flex flex-col items-center justify-start pt-36 sm:pt-48 md:pt-64 lg:pt-72 xl:pt-80 pb-16">
         {/* Backdrop Image Layer - Clean backdrop image with Himlayan title script */}
         <div className="absolute inset-0 overflow-hidden">
           <div
@@ -300,6 +333,8 @@ export const LandingPage: React.FC = () => {
               backgroundImage: `url(${himlayanBackdropImg})`,
             }}
           />
+          {/* Subtle mobile dark overlay to improve legibility on small screens */}
+          <div className="absolute inset-0 bg-black/35 sm:bg-transparent" />
           {/* Subtle bottom gradient to ensure text & controls contrast gracefully over lower background */}
           <div className="absolute inset-0 bg-gradient-to-b from-transparent via-emerald-950/20 to-slate-950/90" />
         </div>

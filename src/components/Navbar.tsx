@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'motion/react';
-import { ArrowRight, MapPin, Grid, LogIn, LogOut, Wrench, Home, Shield, User, Mail, Pencil, Camera, Check, X, Lock, RotateCcw, RotateCw, Bell, Trash2, Calendar, CheckCircle2 } from 'lucide-react';
+import { ArrowRight, MapPin, Grid, LogIn, LogOut, Wrench, Home, Shield, User, Mail, Pencil, Camera, Check, X, Lock, RotateCcw, RotateCw, Bell, Trash2, Calendar, CheckCircle2, Menu } from 'lucide-react';
 import { useAuthStore } from '../store/authStore';
 
 import solanoLguSealImg from '../assets/images/solano_lgu_seal_1784964597638.jpg';
@@ -26,6 +26,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onSaveAssets,
 }) => {
   const [scrolled, setScrolled] = useState(false);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [showProfileModal, setShowProfileModal] = useState(false);
   const profileModalRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -92,6 +93,10 @@ export const Navbar: React.FC<NavbarProps> = ({
       setEmailValue(user.email || 'engineer@himlayan.solano.gov.ph');
     }
   }, [user]);
+
+  useEffect(() => {
+    setIsMobileMenuOpen(false);
+  }, [location]);
 
   useEffect(() => {
     const handleScroll = () => {
@@ -641,8 +646,84 @@ export const Navbar: React.FC<NavbarProps> = ({
               <span>Login</span>
             </Link>
           )}
+
+          {/* Mobile Menu Toggle Button */}
+          {(!isAuthenticated || user?.role !== 'engineer') && location.pathname !== '/engineer/workspace' && (
+            <button
+              onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+              className="md:hidden p-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 transition-all cursor-pointer focus:outline-none shrink-0"
+              title="Toggle Menu"
+            >
+              {isMobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+            </button>
+          )}
         </div>
       </div>
+
+      {/* Mobile Navigation Dropdown */}
+      <AnimatePresence>
+        {isMobileMenuOpen && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.25, ease: 'easeInOut' }}
+            className="md:hidden border-t border-slate-200/60 bg-white/95 backdrop-blur-md overflow-hidden"
+          >
+            <div className="px-5 py-4 space-y-2.5 pb-6">
+              {navLinks.map((link) => {
+                const Icon = link.icon;
+                const isActive = location.pathname === link.path;
+                return (
+                  <Link
+                    key={link.path}
+                    to={link.path}
+                    className={`flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold transition-all ${
+                      isActive
+                        ? 'bg-emerald-700 text-white shadow-sm'
+                        : 'text-slate-700 hover:text-slate-900 hover:bg-slate-100'
+                    }`}
+                  >
+                    <Icon className="w-4 h-4 shrink-0 text-emerald-600" />
+                    <span>{link.name}</span>
+                  </Link>
+                );
+              })}
+
+              {/* Mobile CTA Login/Portal if not on md screen */}
+              <div className="pt-2.5 border-t border-slate-100">
+                {isAuthenticated ? (
+                  user?.role === 'engineer' ? (
+                    <Link
+                      to="/engineer/workspace"
+                      className="flex items-center justify-between px-4 py-3 bg-emerald-50 text-emerald-800 rounded-xl text-xs font-bold border border-emerald-200"
+                    >
+                      <span>Engineer Workspace</span>
+                      <ArrowRight className="w-4 h-4 text-emerald-600" />
+                    </Link>
+                  ) : (
+                    <Link
+                      to="/admin/dashboard"
+                      className="flex items-center justify-between px-4 py-3 bg-emerald-50 text-emerald-800 rounded-xl text-xs font-bold border border-emerald-200"
+                    >
+                      <span>Admin Portal</span>
+                      <ArrowRight className="w-4 h-4 text-emerald-600" />
+                    </Link>
+                  )
+                ) : (
+                  <Link
+                    to="/login"
+                    className="flex items-center justify-center gap-2 w-full py-3 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold shadow-md"
+                  >
+                    <LogIn className="w-4 h-4 text-slate-300" />
+                    <span>Login to Portal</span>
+                  </Link>
+                )}
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </motion.header>
   );
 };

@@ -8,7 +8,7 @@ export type ContractType = 'new' | 'renewal';
 
 export type PaymentType = 'cash' | 'installment';
 
-export type ContractStatus = 'active' | 'completed' | 'cancelled';
+export type ContractStatus = 'active' | 'completed' | 'cancelled' | 'fully_paid';
 
 export type InquiryStatus = 'pending' | 'approved' | 'rejected' | 'completed';
 

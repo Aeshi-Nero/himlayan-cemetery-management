@@ -185,6 +185,22 @@ const getPlotDeceasedNames = (plot: Plot): string[] => {
   return Array(plot.capacity || 1).fill('');
 };
 
+// Helper: extract raw user notes from plot notes JSON, or return plot notes as-is if not JSON
+const getPlotUserNotes = (notes: string | undefined): string => {
+  if (!notes) return '';
+  try {
+    const parsed = JSON.parse(notes);
+    if (parsed && typeof parsed === 'object') {
+      if ('user_notes' in parsed) {
+        return parsed.user_notes || '';
+      }
+    }
+  } catch {
+    // not json
+  }
+  return notes;
+};
+
 // Helper: compute zoom-clamped screen dimensions so plots and nodes never get oversized when zooming in
 const calcPlotDimensions = (plot: Plot, zoomLevel: number) => {
   const { lot_type: lotType, width, height } = plot;
@@ -768,6 +784,28 @@ const MapEventsCapture: React.FC<{
       ) {
         return;
       }
+
+      // If user clicked on a marker, path, handle, button, input, or other interactive element, do not intercept
+      let curr = e.target as HTMLElement | null;
+      let isInteractive = false;
+      while (curr && curr !== container) {
+        if (
+          curr.classList.contains('leaflet-marker-icon') ||
+          curr.classList.contains('custom-engineer-plot-marker') ||
+          curr.classList.contains('leaflet-interactive') ||
+          curr.tagName === 'BUTTON' ||
+          curr.tagName === 'INPUT' ||
+          curr.tagName === 'SELECT' ||
+          curr.tagName === 'TEXTAREA' ||
+          curr.style.pointerEvents === 'auto' ||
+          curr.getAttribute('role') === 'button'
+        ) {
+          isInteractive = true;
+          break;
+        }
+        curr = curr.parentElement;
+      }
+      if (isInteractive) return;
 
       // Intercept completely to block standard dragging/zooming/marker-dragging
       e.preventDefault();
@@ -2497,8 +2535,8 @@ export const EngineerWorkspacePage: React.FC = () => {
                     const currPlot = cluster.find(p => p.id === currId);
                     if (currPlot) path.push(currPlot);
 
-                    const neighbors = adj.get(currId) || [];
-                    const nextId = neighbors.find(nId => clusterIds.has(nId) && !pathVisited.has(nId));
+                    const neighbors: string[] = adj.get(currId) || [];
+                    const nextId: string | undefined = neighbors.find((nId: string) => clusterIds.has(nId) && !pathVisited.has(nId));
                     currId = nextId || null;
                   }
 
@@ -3327,38 +3365,7 @@ export const EngineerWorkspacePage: React.FC = () => {
                       </div>
                     )}
 
-                    <div className="pt-1.5 border-t border-amber-200/80">
-                      <label className="block text-[10px] font-bold text-amber-900 uppercase mb-1">Set / Change Scheduled Burial Date</label>
-                      <input
-                        type="datetime-local"
-                        value={
-                          activePlot.burial_date
-                            ? new Date(activePlot.burial_date).toISOString().slice(0, 16)
-                            : ''
-                        }
-                        onChange={async (e) => {
-                          const newDateStr = e.target.value ? new Date(e.target.value).toISOString() : '';
-                          const updated = {
-                            status: 'reserved' as const,
-                            burial_date: newDateStr,
-                          };
-                          setPlots((prev) => prev.map((p) => p.id === activePlot.id ? { ...p, ...updated } : p));
-                          setSelectedPlot((p) => p && p.id === activePlot.id ? { ...p, ...updated } : p);
-                          if (!activePlot.id.startsWith('plot-new-')) {
-                            try {
-                              await apiClient.put(`/plots/${activePlot.id}`, updated);
-                              window.dispatchEvent(new CustomEvent('himlayan_plots_updated'));
-                            } catch (err) {
-                              console.error('Error updating burial date:', err);
-                            }
-                          }
-                        }}
-                        className="w-full bg-white border border-amber-300 rounded-lg px-2 py-1 text-xs text-slate-900 focus:outline-none focus:border-amber-600"
-                      />
-                      <p className="text-[10px] text-amber-800/80 mt-1 italic leading-tight">
-                        * Automatically turns Red (Occupied) once burial date passes.
-                      </p>
-                    </div>
+
                   </div>
                 </div>
               )}
@@ -3380,20 +3387,22 @@ export const EngineerWorkspacePage: React.FC = () => {
                             const nextNames = [...currentDeceased, ''];
                             const newCap = Math.max(activePlot.capacity || 1, nextNames.length);
                             const filledCount = nextNames.filter((n) => n.trim().length > 0).length;
+                            const actualUserNotes = getPlotUserNotes(activePlot.notes);
                             const updated = {
                               deceased_names: nextNames,
                               capacity: newCap,
                               current_occupants: filledCount,
-                              notes: JSON.stringify({ deceased_names: nextNames, user_notes: activePlot.notes || '' }),
+                              notes: JSON.stringify({ deceased_names: nextNames, user_notes: actualUserNotes }),
                             };
                             setPlots((prev) => prev.map((p) => p.id === activePlot.id ? { ...p, ...updated } : p));
                             setSelectedPlot((p) => p && p.id === activePlot.id ? { ...p, ...updated } : p);
                             if (!activePlot.id.startsWith('plot-new-')) {
                               try {
                                 await apiClient.put(`/plots/${activePlot.id}`, {
+                                  deceased_names: nextNames,
                                   capacity: newCap,
                                   current_occupants: filledCount,
-                                  notes: JSON.stringify({ deceased_names: nextNames, user_notes: activePlot.notes || '' }),
+                                  notes: JSON.stringify({ deceased_names: nextNames, user_notes: actualUserNotes }),
                                 });
                               } catch (err) {
                                 console.error('Error adding stack level:', err);
@@ -3423,18 +3432,20 @@ export const EngineerWorkspacePage: React.FC = () => {
                               const nextNames = [...currentDeceased];
                               nextNames[idx] = e.target.value;
                               const filledCount = nextNames.filter((n) => n.trim().length > 0).length;
+                              const actualUserNotes = getPlotUserNotes(activePlot.notes);
                               const updated = {
                                 deceased_names: nextNames,
                                 current_occupants: filledCount,
-                                notes: JSON.stringify({ deceased_names: nextNames, user_notes: activePlot.notes || '' }),
+                                notes: JSON.stringify({ deceased_names: nextNames, user_notes: actualUserNotes }),
                               };
                               setPlots((prev) => prev.map((p) => p.id === activePlot.id ? { ...p, ...updated } : p));
                               setSelectedPlot((p) => p && p.id === activePlot.id ? { ...p, ...updated } : p);
                               if (!activePlot.id.startsWith('plot-new-')) {
                                 try {
                                   await apiClient.put(`/plots/${activePlot.id}`, {
+                                    deceased_names: nextNames,
                                     current_occupants: filledCount,
-                                    notes: JSON.stringify({ deceased_names: nextNames, user_notes: activePlot.notes || '' }),
+                                    notes: JSON.stringify({ deceased_names: nextNames, user_notes: actualUserNotes }),
                                   });
                                 } catch (err) {
                                   console.error('Error saving deceased name:', err);
@@ -3449,20 +3460,22 @@ export const EngineerWorkspacePage: React.FC = () => {
                                 const nextNames = currentDeceased.filter((_, i) => i !== idx);
                                 const newCap = Math.max(1, nextNames.length);
                                 const filledCount = nextNames.filter((n) => n.trim().length > 0).length;
+                                const actualUserNotes = getPlotUserNotes(activePlot.notes);
                                 const updated = {
                                   deceased_names: nextNames,
                                   capacity: newCap,
                                   current_occupants: filledCount,
-                                  notes: JSON.stringify({ deceased_names: nextNames, user_notes: activePlot.notes || '' }),
+                                  notes: JSON.stringify({ deceased_names: nextNames, user_notes: actualUserNotes }),
                                 };
                                 setPlots((prev) => prev.map((p) => p.id === activePlot.id ? { ...p, ...updated } : p));
                                 setSelectedPlot((p) => p && p.id === activePlot.id ? { ...p, ...updated } : p);
                                 if (!activePlot.id.startsWith('plot-new-')) {
                                   try {
                                     await apiClient.put(`/plots/${activePlot.id}`, {
+                                      deceased_names: nextNames,
                                       capacity: newCap,
                                       current_occupants: filledCount,
-                                      notes: JSON.stringify({ deceased_names: nextNames, user_notes: activePlot.notes || '' }),
+                                      notes: JSON.stringify({ deceased_names: nextNames, user_notes: actualUserNotes }),
                                     });
                                   } catch (err) {
                                     console.error('Error removing stack level:', err);
