@@ -11,6 +11,34 @@ use Illuminate\Support\Str;
 
 class PlotController extends Controller
 {
+    /** Maximum number of deceased-name stacks allowed on an apartment lot. */
+    private const MAX_STACKS = 5;
+
+    /** Whitelist of fields the update endpoint is allowed to change. */
+    private const UPDATABLE_FIELDS = [
+        'plot_number',
+        'section',
+        'lat',
+        'lng',
+        'lot_type',
+        'capacity',
+        'current_occupants',
+        'status',
+        'price',
+        'nearest_path_node_id',
+        'notes',
+        'width',
+        'height',
+        'rotation',
+        'color',
+        'cemetery_id',
+        'deceased_names',
+        'burial_date',
+        'burial_time',
+        'inquirer_name',
+        'deceased_name',
+    ];
+
     public function index(Request $request): JsonResponse
     {
         Plot::syncReservedToOccupied();
@@ -126,7 +154,37 @@ class PlotController extends Controller
             return response()->json(['success' => false, 'error' => 'Plot not found'], 404);
         }
 
-        $plot->fill($request->all());
+        $data = $request->validate([
+            'plot_number' => ['sometimes', 'string'],
+            'section' => ['sometimes', 'string'],
+            'lat' => ['sometimes', 'numeric'],
+            'lng' => ['sometimes', 'numeric'],
+            'lot_type' => ['sometimes', 'string', 'in:single,family,apartment,path,border,entrance'],
+            'capacity' => ['sometimes', 'integer', 'min:1'],
+            'current_occupants' => ['sometimes', 'integer', 'min:0'],
+            'status' => ['sometimes', 'string', 'in:available,reserved,occupied,full'],
+            'price' => ['sometimes', 'numeric', 'min:0'],
+            'nearest_path_node_id' => ['sometimes', 'string'],
+            'notes' => ['sometimes', 'string'],
+            'width' => ['sometimes', 'numeric'],
+            'height' => ['sometimes', 'numeric'],
+            'rotation' => ['sometimes', 'numeric'],
+            'color' => ['sometimes', 'string'],
+            'cemetery_id' => ['sometimes', 'string'],
+            'deceased_names' => ['sometimes', 'array', 'max:'.self::MAX_STACKS],
+            'deceased_names.*' => ['string'],
+            'burial_date' => ['sometimes', 'nullable', 'date'],
+            'burial_time' => ['sometimes', 'nullable', 'string'],
+            'inquirer_name' => ['sometimes', 'string'],
+            'deceased_name' => ['sometimes', 'string'],
+        ]);
+
+        // Enforce the stack ceiling on the persisted payload (defense in depth).
+        if (isset($data['deceased_names'])) {
+            $data['deceased_names'] = array_slice($data['deceased_names'], 0, self::MAX_STACKS);
+        }
+
+        $plot->fill(array_intersect_key($data, array_flip(self::UPDATABLE_FIELDS)));
         $plot->save();
 
         ActivityLog::record('UPDATE_PLOT', 'Plots', "Updated plot {$plot->plot_number} status/data", $request);

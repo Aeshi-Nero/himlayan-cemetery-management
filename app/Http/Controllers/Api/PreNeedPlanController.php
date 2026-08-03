@@ -7,13 +7,20 @@ use App\Models\ActivityLog;
 use App\Models\PreNeedPlan;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Str;
 
 class PreNeedPlanController extends Controller
 {
+    private const CACHE_KEY = 'plans.public';
+
+    private const CACHE_TTL_SECONDS = 3600;
+
     public function index(): JsonResponse
     {
-        $plans = PreNeedPlan::orderBy('type')->orderBy('name')->get();
+        $plans = Cache::remember(self::CACHE_KEY, self::CACHE_TTL_SECONDS, function () {
+            return PreNeedPlan::orderBy('type')->orderBy('name')->get()->toArray();
+        });
 
         return response()->json(['success' => true, 'data' => $plans]);
     }
@@ -35,6 +42,8 @@ class PreNeedPlanController extends Controller
         $data['is_active'] = $request->boolean('is_active');
 
         $plan = PreNeedPlan::create($data);
+
+        Cache::forget(self::CACHE_KEY);
 
         ActivityLog::record('CREATE_PLAN', 'Pre-Need Plans', "Created pre-need plan {$plan->name}", $request);
 
@@ -64,6 +73,8 @@ class PreNeedPlanController extends Controller
 
         $plan->update($data);
 
+        Cache::forget(self::CACHE_KEY);
+
         ActivityLog::record('UPDATE_PLAN', 'Pre-Need Plans', "Updated pre-need plan {$plan->name}", $request);
 
         return response()->json(['success' => true, 'data' => $plan]);
@@ -84,6 +95,8 @@ class PreNeedPlanController extends Controller
         ActivityLog::record('DELETE_PLAN', 'Pre-Need Plans', "Deleted pre-need plan {$plan->name}", $request);
 
         $plan->delete();
+
+        Cache::forget(self::CACHE_KEY);
 
         return response()->json(['success' => true]);
     }

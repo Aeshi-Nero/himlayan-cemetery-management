@@ -13,6 +13,18 @@ use Illuminate\Support\Str;
 
 class InquiryController extends Controller
 {
+    /** Whitelist of fields the update endpoint is allowed to change. */
+    private const UPDATABLE_FIELDS = [
+        'plot_id',
+        'full_name',
+        'contact_number',
+        'email',
+        'requested_burial_date',
+        'deceased_name',
+        'message',
+        'status',
+    ];
+
     public function index(): JsonResponse
     {
         Plot::syncReservedToOccupied();
@@ -88,7 +100,18 @@ class InquiryController extends Controller
             return response()->json(['success' => false, 'error' => 'Inquiry not found'], 404);
         }
 
-        $inquiry->fill($request->all());
+        $data = $request->validate([
+            'plot_id' => ['sometimes', 'nullable', 'string'],
+            'full_name' => ['sometimes', 'string'],
+            'contact_number' => ['sometimes', 'string'],
+            'email' => ['sometimes', 'nullable', 'email'],
+            'requested_burial_date' => ['sometimes', 'nullable', 'date'],
+            'deceased_name' => ['sometimes', 'nullable', 'string'],
+            'message' => ['sometimes', 'nullable', 'string'],
+            'status' => ['sometimes', 'string', 'in:pending,contacted,approved,rejected,completed,closed'],
+        ]);
+
+        $inquiry->fill(array_intersect_key($data, array_flip(self::UPDATABLE_FIELDS)));
         $inquiry->processed_by = $request->user()?->id ?? $inquiry->processed_by;
         $inquiry->processed_at = now();
         $inquiry->save();

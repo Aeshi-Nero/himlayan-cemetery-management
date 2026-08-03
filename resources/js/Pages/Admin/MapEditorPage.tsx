@@ -5,6 +5,7 @@ import type { ReactNode } from 'react';
 import { Plot } from '@/types';
 import AdminLayout from '@/Layouts/AdminLayout';
 import { MapPin, Save, RefreshCw } from 'lucide-react';
+import { DEFAULT_MAP_CENTER, DEFAULT_MAP_ZOOM, FALLBACK_PLOT_LAT, FALLBACK_PLOT_LNG } from '@/constants/geo';
 
 const createPlotIcon = (plot: Plot, zoomLevel: number = 16) => {
   const { status, lot_type: lotType, width, height, rotation } = plot;
@@ -115,7 +116,7 @@ export default function MapEditorPage() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 h-[600px]">
         {/* Map View */}
         <div className="lg:col-span-2 bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-xs h-full">
-          <MapContainer center={[14.6710, 121.0415]} zoom={16} maxZoom={24} className="h-full w-full z-10">
+          <MapContainer center={DEFAULT_MAP_CENTER} zoom={DEFAULT_MAP_ZOOM} maxZoom={24} className="h-full w-full z-10">
             <TileLayer
               attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
               url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
@@ -125,7 +126,7 @@ export default function MapEditorPage() {
             {plots.map((plot) => (
               <Marker
                 key={plot.id}
-                position={[plot.lat || 14.6720, plot.lng || 121.0410]}
+                position={[plot.lat || FALLBACK_PLOT_LAT, plot.lng || FALLBACK_PLOT_LNG]}
                 icon={createPlotIcon(plot)}
                 eventHandlers={{
                   click: () => setSelectedPlot(plot),

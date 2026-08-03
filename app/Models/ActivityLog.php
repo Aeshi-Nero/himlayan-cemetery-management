@@ -45,8 +45,9 @@ class ActivityLog extends Model
 
         if (static::count() > self::MAX_RECORDS) {
             $excessIds = static::orderByDesc('created_at')
+                ->skip(self::MAX_RECORDS)
+                ->take(1000)
                 ->pluck('id')
-                ->slice(self::MAX_RECORDS)
                 ->all();
 
             if ($excessIds !== []) {

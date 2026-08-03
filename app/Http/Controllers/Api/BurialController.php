@@ -13,6 +13,18 @@ use Illuminate\Support\Str;
 
 class BurialController extends Controller
 {
+    /** Whitelist of fields the update endpoint is allowed to change. */
+    private const UPDATABLE_FIELDS = [
+        'plot_id',
+        'contract_id',
+        'deceased_name',
+        'date_of_birth',
+        'date_of_death',
+        'burial_date',
+        'burial_status',
+        'notes',
+    ];
+
     public function index(): JsonResponse
     {
         $burials = Burial::with(['plot', 'contract'])->orderByDesc('created_at')->get();
@@ -87,7 +99,18 @@ class BurialController extends Controller
             return response()->json(['success' => false, 'error' => 'Burial record not found'], 404);
         }
 
-        $burial->fill($request->all());
+        $data = $request->validate([
+            'plot_id' => ['sometimes', 'string', 'exists:plots,id'],
+            'contract_id' => ['sometimes', 'nullable', 'string', 'exists:contracts,id'],
+            'deceased_name' => ['sometimes', 'string'],
+            'date_of_birth' => ['sometimes', 'nullable', 'date'],
+            'date_of_death' => ['sometimes', 'nullable', 'date'],
+            'burial_date' => ['sometimes', 'date'],
+            'burial_status' => ['sometimes', 'string', 'in:scheduled,completed,cancelled'],
+            'notes' => ['sometimes', 'nullable', 'string'],
+        ]);
+
+        $burial->fill(array_intersect_key($data, array_flip(self::UPDATABLE_FIELDS)));
         $burial->save();
 
         ActivityLog::record('UPDATE_BURIAL', 'Burials', "Updated burial record {$id}", $request);

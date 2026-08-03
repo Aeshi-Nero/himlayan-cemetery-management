@@ -80,15 +80,19 @@ class Plot extends Model
     {
         $now = now();
 
-        static::query()
+        $base = static::query()
             ->where('status', 'reserved')
             ->whereNotNull('burial_date')
-            ->where('burial_date', '<=', $now)
-            ->get()
-            ->each(function (Plot $plot) {
-                $plot->status = 'occupied';
-                $plot->current_occupants = max(1, (int) $plot->current_occupants);
-                $plot->save();
-            });
+            ->where('burial_date', '<=', $now);
+
+        if (! $base->exists()) {
+            return;
+        }
+
+        $base->get()->each(function (Plot $plot) {
+            $plot->status = 'occupied';
+            $plot->current_occupants = max(1, (int) $plot->current_occupants);
+            $plot->save();
+        });
     }
 }

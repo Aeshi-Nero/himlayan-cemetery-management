@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { router, usePage } from '@inertiajs/react';
 import { motion, AnimatePresence } from 'motion/react';
 import { MapContainer, TileLayer, Polygon, Polyline, Marker, Popup, useMap, ZoomControl } from 'react-leaflet';
@@ -7,6 +7,22 @@ import 'leaflet/dist/leaflet.css';
 import { Navbar } from '@/Components/Engineer/Navbar';
 import { Plot } from '@/types';
 import type { AuthUser } from '@/types/inertia';
+import {
+  DEFAULT_CEMETERY_ID,
+  DEFAULT_MAP_CENTER,
+  DEFAULT_HIMLAYAN_POLYGON,
+  FALLBACK_PLOT_LAT,
+  FALLBACK_PLOT_LNG,
+  FOCUS_ZOOM_LEVEL,
+  FLY_DURATION_SECONDS,
+  DUPLICATE_SINGLE_OFFSET,
+  DUPLICATE_MULTI_OFFSET,
+  PLOT_NUMBER_BASE,
+  MIN_BORDER_PLOTS,
+  MIN_POLYGON_POINTS,
+  DEFAULT_MAP_ZOOM,
+  PATH_SNAP_THRESHOLD,
+} from '@/constants/geo';
 import {
   Wrench,
   Save,
@@ -48,6 +64,9 @@ L.Icon.Default.mergeOptions({
   shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png',
 });
 
+// Business rule: maximum number of deceased-name stacks per apartment lot
+const MAX_STACKS = 5;
+
 const MapResizer: React.FC = () => {
   const map = useMap();
   useEffect(() => {
@@ -86,83 +105,54 @@ const isPointInPolygon = (point: [number, number], polygon: [number, number][]):
   return inside;
 };
 
-// Helper: sort border nodes to form a simple non-self-intersecting polygon loop using a Euclidean TSP tour with 2-opt uncrossing
-const sortBorderPlotsSequentially = (borderPlots: Plot[]): Plot[] => {
-  if (borderPlots.length <= 2) return borderPlots;
+// Helper: extract the sequential numeric suffix from a border plot number (e.g. "E-3" -> 3)
+const getBorderSeqNumber = (plot: Plot): number => {
+  const m = /-(\d+)$/.exec(plot.plot_number || '');
+  return m ? parseInt(m[1], 10) : 0;
+};
 
-  const getDist = (p1: Plot, p2: Plot) => {
-    const lat1 = p1.lat ?? 14.6720;
-    const lng1 = p1.lng ?? 121.0410;
-    const lat2 = p2.lat ?? 14.6720;
-    const lng2 = p2.lng ?? 121.0410;
-    const dLat = lat2 - lat1;
-    const dLng = lng2 - lng1;
-    return dLat * dLat + dLng * dLng;
-  };
-
-  const n = borderPlots.length;
-
-  // Build an initial tour using Nearest Neighbor heuristic starting at index 0
-  let tour: number[] = [0];
-  const visited = new Set<number>([0]);
-
-  while (tour.length < n) {
-    const currentIdx = tour[tour.length - 1];
-    let bestNext = -1;
-    let minDist = Infinity;
-
-    for (let i = 0; i < n; i++) {
-      if (!visited.has(i)) {
-        const d = getDist(borderPlots[currentIdx], borderPlots[i]);
-        if (d < minDist) {
-          minDist = d;
-          bestNext = i;
-        }
-      }
-    }
-
-    if (bestNext !== -1) {
-      tour.push(bestNext);
-      visited.add(bestNext);
-    } else {
-      break;
-    }
+// Helper: compute the active boundary polygon (from placed border nodes, falling back to drawn boundary coords)
+const getActiveBoundaryPolygon = (
+  plots: Plot[],
+  activeCemeteryId: string,
+  polygonCoords: [number, number][]
+): [number, number][] => {
+  const activeBorders = plots.filter((p) => p.lot_type === 'border' && (p.cemetery_id || DEFAULT_CEMETERY_ID) === activeCemeteryId);
+  if (activeBorders.length >= MIN_BORDER_PLOTS) {
+    return sortBorderPlotsByPlacement(activeBorders).map((p) => [p.lat || FALLBACK_PLOT_LAT, p.lng || FALLBACK_PLOT_LNG] as [number, number]);
   }
-
-  // Refine the tour using iterative 2-opt swaps to eliminate any self-intersecting crossings
-  let improved = true;
-  let iterations = 0;
-  const maxIterations = 200;
-
-  while (improved && iterations < maxIterations) {
-    improved = false;
-    iterations++;
-
-    for (let i = 0; i < n - 1; i++) {
-      for (let j = i + 2; j < n; j++) {
-        const nextJ = (j + 1) % n;
-        if (nextJ === i) continue;
-
-        const currentDist =
-          Math.sqrt(getDist(borderPlots[tour[i]], borderPlots[tour[i + 1]])) +
-          Math.sqrt(getDist(borderPlots[tour[j]], borderPlots[tour[nextJ]]));
-
-        const newDist =
-          Math.sqrt(getDist(borderPlots[tour[i]], borderPlots[tour[j]])) +
-          Math.sqrt(getDist(borderPlots[tour[i + 1]], borderPlots[tour[nextJ]]));
-
-        if (newDist < currentDist - 1e-9) {
-          // Perform 2-opt swap: reverse the tour segment from i+1 to j
-          const segment = tour.slice(i + 1, j + 1);
-          segment.reverse();
-          tour.splice(i + 1, j - i, ...segment);
-          improved = true;
-        }
-      }
-    }
+  if (activeBorders.length === 0 && polygonCoords.length >= MIN_POLYGON_POINTS) {
+    return polygonCoords;
   }
+  return [];
+};
 
-  return tour.map(idx => borderPlots[idx]);
+// Helper: order border plots by their sequential placement number (placement order)
+const sortBorderPlotsByPlacement = (borderPlots: Plot[]): Plot[] => {
+  return [...borderPlots].sort((a, b) => getBorderSeqNumber(a) - getBorderSeqNumber(b));
+};
+
+// Helper: compute the boundary polygon as it would be if a given border node moved to `proposed`
+const getProposedBoundaryPolygon = (
+  plots: Plot[],
+  activeCemeteryId: string,
+  movedBorderId: string,
+  proposed: [number, number]
+): [number, number][] => {
+  const activeBorders = plots.filter((p) => p.lot_type === 'border' && (p.cemetery_id || DEFAULT_CEMETERY_ID) === activeCemeteryId);
+  if (activeBorders.length < MIN_BORDER_PLOTS) return [];
+  return sortBorderPlotsByPlacement(activeBorders).map((p) =>
+    p.id === movedBorderId ? proposed : ([p.lat || FALLBACK_PLOT_LAT, p.lng || FALLBACK_PLOT_LNG] as [number, number])
+  );
+};
+
+// Helper: compute the next sequential border number for a cemetery
+const nextBorderNumber = (plots: Plot[], cemeteryId: string): number => {
+  const borders = plots.filter(
+    (p) => p.lot_type === 'border' && (p.cemetery_id || DEFAULT_CEMETERY_ID) === cemeteryId
+  );
+  const max = borders.reduce((m, p) => Math.max(m, getBorderSeqNumber(p)), 0);
+  return max + 1;
 };
 
 // Helper: parse deceased occupant names array from plot object or notes
@@ -294,6 +284,7 @@ const PlotEditorOverlay: React.FC<{
 
   const { w, h, scale, baseW, baseH } = calcPlotDimensions(plot, zoomLevel);
   const r = plot.rotation || 0;
+  const isNode = plot.lot_type === 'path' || plot.lot_type === 'border' || plot.lot_type === 'entrance';
 
   const handleMouseEnter = () => {
     if (map && map.dragging) {
@@ -329,6 +320,8 @@ const PlotEditorOverlay: React.FC<{
     let finalW = startBaseW;
     let finalH = startBaseH;
     let finalR = startR;
+    let finalLat = plot.lat ?? FALLBACK_PLOT_LAT;
+    let finalLng = plot.lng ?? FALLBACK_PLOT_LNG;
 
     const onMove = (me: MouseEvent) => {
       me.stopPropagation();
@@ -337,40 +330,57 @@ const PlotEditorOverlay: React.FC<{
       if (type === 'resize') {
         const dx = me.clientX - startX;
         const dy = me.clientY - startY;
-        
+
         const rad = startR * Math.PI / 180;
         const cos = Math.cos(-rad);
         const sin = Math.sin(-rad);
-        
+
         const rotDx = dx * cos - dy * sin;
         const rotDy = dx * sin + dy * cos;
 
         const baseDx = rotDx / scale;
         const baseDy = rotDy / scale;
 
-        if (corner === 'se') { finalW = startBaseW + baseDx * 2; finalH = startBaseH + baseDy * 2; }
-        if (corner === 'sw') { finalW = startBaseW - baseDx * 2; finalH = startBaseH + baseDy * 2; }
-        if (corner === 'ne') { finalW = startBaseW + baseDx * 2; finalH = startBaseH - baseDy * 2; }
-        if (corner === 'nw') { finalW = startBaseW - baseDx * 2; finalH = startBaseH - baseDy * 2; }
-        if (corner === 'n') { finalH = startBaseH - baseDy * 2; }
-        if (corner === 's') { finalH = startBaseH + baseDy * 2; }
-        if (corner === 'w') { finalW = startBaseW - baseDx * 2; }
-        if (corner === 'e') { finalW = startBaseW + baseDx * 2; }
+        let signX = 0;
+        let signY = 0;
 
-        finalW = Math.max(10, finalW);
-        finalH = Math.max(10, finalH);
-        
-        onUpdate(plot.id, { width: finalW, height: finalH });
+        if (corner === 'se') { signX = 1; signY = 1; }
+        else if (corner === 'sw') { signX = -1; signY = 1; }
+        else if (corner === 'ne') { signX = 1; signY = -1; }
+        else if (corner === 'nw') { signX = -1; signY = -1; }
+        else if (corner === 'n') { signY = -1; }
+        else if (corner === 's') { signY = 1; }
+        else if (corner === 'w') { signX = -1; }
+        else if (corner === 'e') { signX = 1; }
+
+        finalW = Math.max(10, startBaseW + signX * baseDx);
+        finalH = Math.max(10, startBaseH + signY * baseDy);
+
+        // Anchor the opposite edge: shift the center by half the actual screen change,
+        // along the dragged edge direction (compensating for plot rotation).
+        const actW = finalW - startBaseW;
+        const actH = finalH - startBaseH;
+        const lx = (signX * actW * scale) / 2;
+        const ly = (signY * actH * scale) / 2;
+
+        const shiftX = lx * Math.cos(rad) - ly * Math.sin(rad);
+        const shiftY = lx * Math.sin(rad) + ly * Math.cos(rad);
+
+        const newCenter = map.containerPointToLatLng(L.point(pos.x + shiftX, pos.y + shiftY));
+        finalLat = newCenter.lat;
+        finalLng = newCenter.lng;
+
+        onUpdate(plot.id, { width: finalW, height: finalH, lat: finalLat, lng: finalLng });
       } else if (type === 'rotate') {
         const angle = Math.atan2(me.clientY - centerY, me.clientX - centerX);
         const startAngle = Math.atan2(startY - centerY, startX - centerX);
         const delta = (angle - startAngle) * 180 / Math.PI;
         finalR = startR + delta;
-        
+
         onUpdate(plot.id, { rotation: finalR });
       }
     };
-    
+
     const onUp = (ue?: MouseEvent) => {
       if (ue) {
         ue.stopPropagation();
@@ -378,13 +388,13 @@ const PlotEditorOverlay: React.FC<{
       }
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
-      
+
       if (map && map.dragging && activeGisTool === 'pan') {
         map.dragging.enable();
       }
 
       if (type === 'resize') {
-         onUpdate(plot.id, { width: finalW, height: finalH, _isFinal: true } as any);
+         onUpdate(plot.id, { width: finalW, height: finalH, lat: finalLat, lng: finalLng, _isFinal: true } as any);
       } else {
          onUpdate(plot.id, { rotation: finalR, _isFinal: true } as any);
       }
@@ -419,7 +429,7 @@ const PlotEditorOverlay: React.FC<{
         }}
       >
         {/* Resize Handles */}
-        {!hideControls && ['nw', 'ne', 'sw', 'se'].map(corner => (
+        {!hideControls && !isNode && ['nw', 'ne', 'sw', 'se'].map(corner => (
           <div
             key={corner}
             onMouseDown={(e) => startDrag(e, 'resize', corner)}
@@ -443,7 +453,7 @@ const PlotEditorOverlay: React.FC<{
           />
         ))}
         {/* Mid-point width/height handles */}
-        {!hideControls && (
+        {!hideControls && !isNode && (
           <>
             <div onMouseDown={(e) => startDrag(e, 'resize', 'n')} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} style={{ position: 'absolute', top: -4, left: '50%', transform: 'translateX(-50%)', width: 12, height: 6, backgroundColor: 'white', border: '1.5px solid #8b5cf6', borderRadius: '4px', pointerEvents: 'auto', cursor: 'pointer' }} />
             <div onMouseDown={(e) => startDrag(e, 'resize', 's')} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} style={{ position: 'absolute', bottom: -4, left: '50%', transform: 'translateX(-50%)', width: 12, height: 6, backgroundColor: 'white', border: '1.5px solid #8b5cf6', borderRadius: '4px', pointerEvents: 'auto', cursor: 'pointer' }} />
@@ -527,6 +537,208 @@ const PlotEditorOverlay: React.FC<{
             <Trash2 size={13} className="text-white" />
           </div>
         )}
+      </div>
+    </div>
+  );
+};
+
+const MultiSelectOverlay: React.FC<{
+  plots: Plot[];
+  map: L.Map | null;
+  zoomLevel: number;
+  ignoreMapClickRef?: React.MutableRefObject<boolean>;
+  onDelete: () => void;
+  onUpdate: (id: string, updates: any) => void;
+}> = ({ plots, map, zoomLevel, ignoreMapClickRef, onDelete, onUpdate }) => {
+  const isRotatingRef = useRef(false);
+  const rotationRef = useRef(0);
+  const baseBoundsRef = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
+
+  const selectionKey = plots.map((p) => p.id).sort().join('|');
+
+  useEffect(() => {
+    isRotatingRef.current = false;
+    rotationRef.current = 0;
+    baseBoundsRef.current = null;
+  }, [selectionKey]);
+
+  if (!map || plots.length < 2) return null;
+
+  const PAD = 6;
+
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+
+  plots.forEach((p) => {
+    const pt = map.latLngToContainerPoint(L.latLng(p.lat || 0, p.lng || 0));
+    const { w, h } = calcPlotDimensions(p, zoomLevel);
+    const rad = ((p.rotation || 0) * Math.PI) / 180;
+    const hx = (w * Math.abs(Math.cos(rad)) + h * Math.abs(Math.sin(rad))) / 2 + PAD;
+    const hy = (w * Math.abs(Math.sin(rad)) + h * Math.abs(Math.cos(rad))) / 2 + PAD;
+    if (pt.x - hx < minX) minX = pt.x - hx;
+    if (pt.x + hx > maxX) maxX = pt.x + hx;
+    if (pt.y - hy < minY) minY = pt.y - hy;
+    if (pt.y + hy > maxY) maxY = pt.y + hy;
+  });
+
+  const cur = { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+
+  if (!isRotatingRef.current) {
+    baseBoundsRef.current = cur;
+  }
+  const base = baseBoundsRef.current || cur;
+  const rot = isRotatingRef.current ? rotationRef.current : 0;
+  const cx = base.x + base.w / 2;
+  const cy = base.y + base.h / 2;
+
+  const anchorId = plots[0].id;
+
+  const handleMouseEnter = () => {
+    if (map && map.dragging) map.dragging.disable();
+  };
+
+  const handleMouseLeave = () => {
+    if (map && map.dragging) map.dragging.enable();
+  };
+
+  const startRotate = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+
+    if (map && map.dragging) map.dragging.disable();
+
+    isRotatingRef.current = true;
+    rotationRef.current = 0;
+    baseBoundsRef.current = cur;
+
+    const rect = map.getContainer().getBoundingClientRect();
+    const centerX = rect.left + cx;
+    const centerY = rect.top + cy;
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const startR = plots[0].rotation || 0;
+    let currentRotation = startR;
+
+    const onMove = (me: MouseEvent) => {
+      me.stopPropagation();
+      me.preventDefault();
+      const angle = Math.atan2(me.clientY - centerY, me.clientX - centerX);
+      const startAngle = Math.atan2(startY - centerY, startX - centerX);
+      const delta = (angle - startAngle) * 180 / Math.PI;
+      currentRotation = startR + delta;
+      rotationRef.current = delta;
+      onUpdate(anchorId, { rotation: currentRotation });
+    };
+
+    const onUp = (ue?: MouseEvent) => {
+      if (ue) {
+        ue.stopPropagation();
+        ue.preventDefault();
+      }
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+      if (map && map.dragging) map.dragging.enable();
+      isRotatingRef.current = false;
+      rotationRef.current = 0;
+      onUpdate(anchorId, { rotation: currentRotation, _isFinal: true });
+    };
+
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+  };
+
+  return (
+    <div className="multi-select-overlay" style={{ position: 'absolute', left: 0, top: 0, width: 0, height: 0, zIndex: 9998, pointerEvents: 'none' }}>
+      <div
+        style={{
+          position: 'absolute',
+          left: cx,
+          top: cy,
+          width: base.w,
+          height: base.h,
+          transform: `translate(-50%, -50%) rotate(${rot}deg)`,
+          transformOrigin: 'center',
+          border: '2px dashed #8b5cf6',
+          backgroundColor: 'rgba(139, 92, 246, 0.08)',
+          borderRadius: 4,
+          pointerEvents: 'none',
+        }}
+      />
+
+      <div
+        onMouseDown={startRotate}
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={handleMouseLeave}
+        style={{
+          position: 'absolute',
+          left: minX + cur.w / 2,
+          top: minY + cur.h,
+          transform: 'translate(-50%, -50%)',
+          width: 28,
+          height: 28,
+          backgroundColor: 'white',
+          border: '2px solid #8b5cf6',
+          borderRadius: '50%',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          pointerEvents: 'auto',
+          cursor: 'grab',
+          boxShadow: '0 2px 6px rgba(0,0,0,0.15)',
+        }}
+        title="Rotate selection"
+      >
+        <RotateCw size={15} className="text-violet-700" />
+      </div>
+
+      <div
+        onClick={(e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          if (ignoreMapClickRef) ignoreMapClickRef.current = true;
+          onDelete();
+        }}
+        onMouseDown={(e) => {
+          e.stopPropagation();
+          if (ignoreMapClickRef) ignoreMapClickRef.current = true;
+        }}
+        onMouseUp={(e) => {
+          e.stopPropagation();
+          if (ignoreMapClickRef) ignoreMapClickRef.current = true;
+        }}
+        onPointerDown={(e) => {
+          e.stopPropagation();
+          if (ignoreMapClickRef) ignoreMapClickRef.current = true;
+        }}
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={handleMouseLeave}
+        style={{
+          position: 'absolute',
+          left: minX + cur.w / 2,
+          top: minY,
+          transform: 'translate(-50%, -50%)',
+          width: 30,
+          height: 30,
+          backgroundColor: '#ef4444',
+          color: 'white',
+          borderRadius: '50%',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          pointerEvents: 'auto',
+          cursor: 'pointer',
+          boxShadow: '0 2px 6px rgba(0,0,0,0.3)',
+          zIndex: 10001,
+        }}
+        title="Delete selection"
+      >
+        <Trash2 size={15} className="text-white" />
       </div>
     </div>
   );
@@ -769,6 +981,14 @@ const MapEventsCapture: React.FC<{
     let marquee: HTMLDivElement | null = null;
     let justFinishedDrag = false;
 
+    const removeMarquee = () => {
+      if (marquee) {
+        marquee.remove();
+        marquee = null;
+      }
+      isDrawing = false;
+    };
+
     const handleMouseDown = (e: MouseEvent) => {
       if (activeGisTool !== 'select' && !e.shiftKey) return;
 
@@ -866,10 +1086,7 @@ const MapEventsCapture: React.FC<{
       if (map.scrollWheelZoom) map.scrollWheelZoom.enable();
       if (map.boxZoom) map.boxZoom.disable();
 
-      if (marquee) {
-        marquee.remove();
-        marquee = null;
-      }
+      removeMarquee();
 
       const endX = e.clientX;
       const endY = e.clientY;
@@ -896,8 +1113,8 @@ const MapEventsCapture: React.FC<{
 
       // Select all plots and nodes inside boundary box
       const selected = plots.filter(plot => {
-        const lat = plot.lat || 14.6720;
-        const lng = plot.lng || 121.0410;
+        const lat = plot.lat || FALLBACK_PLOT_LAT;
+        const lng = plot.lng || FALLBACK_PLOT_LNG;
         const point = map.latLngToContainerPoint([lat, lng]);
         return point.x >= minX && point.x <= maxX && point.y >= minY && point.y <= maxY;
       });
@@ -911,6 +1128,7 @@ const MapEventsCapture: React.FC<{
         e.preventDefault();
         e.stopPropagation();
         justFinishedDrag = false;
+        if (ignoreMapClickRef) ignoreMapClickRef.current = false;
       }
     };
 
@@ -921,6 +1139,8 @@ const MapEventsCapture: React.FC<{
     container.addEventListener('click', handleCaptureClick, true);
 
     return () => {
+      removeMarquee();
+      if (map.dragging) map.dragging.enable();
       container.removeEventListener('mousedown', handleMouseDown, true);
       window.removeEventListener('mousemove', handleMouseMove, true);
       window.removeEventListener('mouseup', handleMouseUp, true);
@@ -958,8 +1178,10 @@ export default function EngineerWorkspacePage() {
   const dragStartPlotsPositionsRef = useRef<Record<string, { lat: number; lng: number }>>({});
   const dragOtherMarkersRef = useRef<{ layer: L.Marker; initialLat: number; initialLng: number }[]>([]);
   const dragStartRotationsRef = useRef<Record<string, number>>({});
+  const dragLastGoodPosRef = useRef<{ lat: number; lng: number } | null>(null);
   const isDraggingRef = useRef(false);
   const ignoreMapClickRef = useRef(false);
+  const lastFlownCemeteryRef = useRef<string | null>(null);
   const markerRefs = useRef<Map<string, L.Marker>>(new Map());
 
   const [undoStack, setUndoStack] = useState<Plot[][]>([]);
@@ -1217,9 +1439,9 @@ export default function EngineerWorkspacePage() {
 
   const duplicatePlot = async (plot: Plot) => {
     saveToUndoStack();
-    const offsetLat = (plot.lat || 14.6710) + 0.0012;
-    const offsetLng = (plot.lng || 121.0415) + 0.0012;
-    const nextPlotNumber = `${plot.section}-${plots.length + 101}`;
+    const offsetLat = (plot.lat || DEFAULT_MAP_CENTER[0]) + DUPLICATE_SINGLE_OFFSET;
+    const offsetLng = (plot.lng || DEFAULT_MAP_CENTER[1]) + DUPLICATE_SINGLE_OFFSET;
+    const nextPlotNumber = `${plot.section}-${plots.length + PLOT_NUMBER_BASE}`;
     const targetLotType = plot.lot_type === 'border' ? 'path' : plot.lot_type;
     try {
       const res = await window.axios.post('/api/plots', {
@@ -1253,7 +1475,7 @@ export default function EngineerWorkspacePage() {
     // Update UI state immediately for responsive feel
     setPlots((prev) => {
       const remaining = prev.filter((p) => !allIdsToRemove.has(p.id));
-      const remainingBorderPlots = remaining.filter((p) => p.lot_type === 'border' && (p.cemetery_id || 'default-himlayan') === activeCemeteryId);
+      const remainingBorderPlots = remaining.filter((p) => p.lot_type === 'border' && (p.cemetery_id || DEFAULT_CEMETERY_ID) === activeCemeteryId);
 
       if (remainingBorderPlots.length === 0) {
         setPolygonCoords([]);
@@ -1265,7 +1487,7 @@ export default function EngineerWorkspacePage() {
           )
         );
       } else if (remainingBorderPlots.length >= 3) {
-        const sorted = sortBorderPlotsSequentially(remainingBorderPlots);
+        const sorted = sortBorderPlotsByPlacement(remainingBorderPlots);
         const updatedCoords = sorted.map((p) => [p.lat || 0, p.lng || 0] as [number, number]);
         setPolygonCoords(updatedCoords);
         setCemeteries((cPrev) =>
@@ -1358,15 +1580,15 @@ export default function EngineerWorkspacePage() {
   const duplicateMultiplePlots = async (plotsToDuplicate: Plot[]) => {
     try {
       saveToUndoStack();
-      const shiftLat = 0.003;
-      const shiftLng = 0.003;
+      const shiftLat = DUPLICATE_MULTI_OFFSET;
+      const shiftLng = DUPLICATE_MULTI_OFFSET;
 
       const idMap = new Map<string, string>();
 
       const promises = plotsToDuplicate.map(async (plot, index) => {
-        const offsetLat = (plot.lat || 14.6710) + shiftLat;
-        const offsetLng = (plot.lng || 121.0415) + shiftLng;
-        const nextPlotNumber = plot.lot_type === 'border' ? `Border-${Date.now().toString().slice(-4)}-${index}` : `${plot.section}-${plots.length + 101 + index}`;
+        const offsetLat = (plot.lat || DEFAULT_MAP_CENTER[0]) + shiftLat;
+        const offsetLng = (plot.lng || DEFAULT_MAP_CENTER[1]) + shiftLng;
+        const nextPlotNumber = plot.lot_type === 'border' ? `Border-${Date.now().toString().slice(-4)}-${index}` : `${plot.section}-${plots.length + PLOT_NUMBER_BASE + index}`;
         const res = await window.axios.post('/api/plots', {
           plot_number: nextPlotNumber,
           section: plot.section,
@@ -1410,7 +1632,7 @@ export default function EngineerWorkspacePage() {
         // Ensure duplicated border nodes are automatically connected to each other into an independent perimeter loop
         const duplicatedBorderPlots = validResults.filter(p => p.lot_type === 'border');
         if (duplicatedBorderPlots.length >= 2) {
-          const sortedBorders = sortBorderPlotsSequentially(duplicatedBorderPlots);
+          const sortedBorders = sortBorderPlotsByPlacement(duplicatedBorderPlots);
 
           for (let i = 0; i < sortedBorders.length; i++) {
             const curr = sortedBorders[i];
@@ -1457,13 +1679,42 @@ export default function EngineerWorkspacePage() {
     }
   };
 
+  // Build and persist the deceased-names update payload for an apartment lot (shared by add/rename/remove stack).
+  const applyDeceasedNamesUpdate = async (
+    targetPlot: Plot,
+    nextNames: string[],
+    nextCapacity: number
+  ) => {
+    if (nextNames.length > MAX_STACKS) {
+      nextNames = nextNames.slice(0, MAX_STACKS);
+      nextCapacity = Math.min(nextCapacity, MAX_STACKS);
+    }
+    const filledCount = nextNames.filter((n) => n.trim().length > 0).length;
+    const userNotes = getPlotUserNotes(targetPlot.notes);
+    const updated = {
+      deceased_names: nextNames,
+      capacity: Math.max(1, nextCapacity),
+      current_occupants: filledCount,
+      notes: JSON.stringify({ deceased_names: nextNames, user_notes: userNotes }),
+    };
+    setPlots((prev) => prev.map((p) => p.id === targetPlot.id ? { ...p, ...updated } : p));
+    setSelectedPlot((p) => p && p.id === targetPlot.id ? { ...p, ...updated } : p);
+    if (!targetPlot.id.startsWith('plot-new-')) {
+      try {
+        await window.axios.put('/api/plots/' + targetPlot.id, updated);
+      } catch (err) {
+        console.error('Error saving deceased stack:', err);
+      }
+    }
+  };
+
   const addPlotAtLocation = async (tool: 'standard' | 'apartment' | 'ground' | 'entrance' | 'point' | 'border', latlng: L.LatLng) => {
     // Check if plot is placed within boundary perimeter when perimeter nodes exist
     let activePolygonCheck: [number, number][] = [];
-    const activeBordersForPlacementCheck = plots.filter((p) => p.lot_type === 'border' && (p.cemetery_id || 'default-himlayan') === activeCemeteryId);
+    const activeBordersForPlacementCheck = plots.filter((p) => p.lot_type === 'border' && (p.cemetery_id || DEFAULT_CEMETERY_ID) === activeCemeteryId);
     if (activeBordersForPlacementCheck.length >= 3) {
-      const sorted = sortBorderPlotsSequentially(activeBordersForPlacementCheck);
-      activePolygonCheck = sorted.map((p) => [p.lat || 14.6720, p.lng || 121.0410] as [number, number]);
+      const sorted = sortBorderPlotsByPlacement(activeBordersForPlacementCheck);
+      activePolygonCheck = sorted.map((p) => [p.lat || FALLBACK_PLOT_LAT, p.lng || FALLBACK_PLOT_LNG] as [number, number]);
     } else if (activeBordersForPlacementCheck.length === 0 && polygonCoords.length >= 3) {
       activePolygonCheck = polygonCoords;
     }
@@ -1510,7 +1761,7 @@ export default function EngineerWorkspacePage() {
       price = 20000;
     }
     
-    const plotNumber = `${sec}-${totalCount + 101}`;
+    const plotNumber = tool === 'border' ? `E-${nextBorderNumber(plots, activeCemeteryId)}` : `${sec}-${totalCount + PLOT_NUMBER_BASE}`;
     const tempId = `plot-new-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     const optimisticPlot: Plot = {
       id: tempId,
@@ -1533,7 +1784,7 @@ export default function EngineerWorkspacePage() {
     setSelectedPlot(optimisticPlot);
 
     if (tool === 'border') {
-      const existingBorders = updatedPlots.filter((p) => p.lot_type === 'border' && (p.cemetery_id || 'default-himlayan') === activeCemeteryId);
+      const existingBorders = updatedPlots.filter((p) => p.lot_type === 'border' && (p.cemetery_id || DEFAULT_CEMETERY_ID) === activeCemeteryId);
       const allBorders = existingBorders;
 
       if (allBorders.length >= 3) {
@@ -1549,7 +1800,7 @@ export default function EngineerWorkspacePage() {
       });
 
       if (allBorders.length >= 2) {
-        const sorted = sortBorderPlotsSequentially(allBorders);
+        const sorted = sortBorderPlotsByPlacement(allBorders);
 
         const newBorderConns: Array<{ id: string; fromId: string; toId: string; cemetery_id: string }> = [];
         for (let i = 0; i < sorted.length; i++) {
@@ -1572,7 +1823,7 @@ export default function EngineerWorkspacePage() {
     // If placed node is a path or entrance node, check if it falls on any existing connection segment between two path nodes
     if (lotType === 'path' || lotType === 'entrance') {
       const existingPathNodes = plots.filter(
-        (p) => (p.lot_type === 'path' || p.lot_type === 'entrance') && (p.cemetery_id || 'default-himlayan') === activeCemeteryId
+        (p) => (p.lot_type === 'path' || p.lot_type === 'entrance') && (p.cemetery_id || DEFAULT_CEMETERY_ID) === activeCemeteryId
       );
       
       connections.forEach((conn) => {
@@ -1581,10 +1832,10 @@ export default function EngineerWorkspacePage() {
         const nodeB = existingPathNodes.find((p) => p.id === conn.toId);
         if (!nodeA || !nodeB) return;
 
-        const ax = nodeA.lng || 121.0410;
-        const ay = nodeA.lat || 14.6720;
-        const bx = nodeB.lng || 121.0410;
-        const by = nodeB.lat || 14.6720;
+        const ax = nodeA.lng || FALLBACK_PLOT_LNG;
+        const ay = nodeA.lat || FALLBACK_PLOT_LAT;
+        const bx = nodeB.lng || FALLBACK_PLOT_LNG;
+        const by = nodeB.lat || FALLBACK_PLOT_LAT;
         const px = latlng.lng;
         const py = latlng.lat;
 
@@ -1602,7 +1853,7 @@ export default function EngineerWorkspacePage() {
           const cy = ay + t * aby;
           const dist = Math.hypot(px - cx, py - cy);
 
-          if (dist < 0.003) {
+          if (dist < PATH_SNAP_THRESHOLD) {
             setConnections((prevConn) => {
               const filtered = prevConn.filter((c) => c.id !== conn.id);
               return [
@@ -1650,6 +1901,13 @@ export default function EngineerWorkspacePage() {
           return prev.map((p) => p.id === tempId ? savedPlot : p);
         });
         setSelectedPlot((prev) => prev && prev.id === tempId ? savedPlot : prev);
+        setConnections((prev) =>
+          prev.map((c) => ({
+            ...c,
+            fromId: c.fromId === tempId ? savedPlot.id : c.fromId,
+            toId: c.toId === tempId ? savedPlot.id : c.toId,
+          }))
+        );
       }
     }).catch((err) => {
       console.error('Error adding plot to server in background:', err);
@@ -1710,6 +1968,28 @@ export default function EngineerWorkspacePage() {
     setSavedSuccess(false);
     try {
       await handleSaveBoundary();
+
+      const activePlotIds = new Set(plots.map((p) => p.id));
+      const activeConnections = connections
+        .filter((c) => !c.cemetery_id || c.cemetery_id === activeCemeteryId)
+        .filter(
+          (c) =>
+            !c.fromId.startsWith('plot-new-') &&
+            !c.toId.startsWith('plot-new-') &&
+            activePlotIds.has(c.fromId) &&
+            activePlotIds.has(c.toId)
+        )
+        .map((c) => ({ fromId: c.fromId, toId: c.toId }));
+
+      try {
+        await window.axios.post('/api/plot-connections/sync', {
+          cemetery_id: activeCemeteryId,
+          connections: activeConnections,
+        });
+      } catch (connErr) {
+        console.error('Error syncing plot connections:', connErr);
+      }
+
       setCemeteries((prev) =>
         prev.map((c) =>
           c.id === activeCemeteryId
@@ -1738,20 +2018,15 @@ export default function EngineerWorkspacePage() {
     center: [number, number];
   }>>([
     {
-      id: 'default-himlayan',
+      id: DEFAULT_CEMETERY_ID,
       name: 'Himlayan Memorial Park',
       location: 'Metro Manila',
-      polygonCoords: [
-        [14.6750, 121.0370],
-        [14.6750, 121.0450],
-        [14.6650, 121.0450],
-        [14.6650, 121.0370],
-      ],
+      polygonCoords: DEFAULT_HIMLAYAN_POLYGON,
       geojsonText: '',
-      center: [14.6710, 121.0415],
+      center: DEFAULT_MAP_CENTER,
     }
   ]);
-  const [activeCemeteryId, setActiveCemeteryId] = useState('default-himlayan');
+  const [activeCemeteryId, setActiveCemeteryId] = useState(DEFAULT_CEMETERY_ID);
 
   // Delete Cemetery Confirmation Modal State
   const [showDeleteCemeteryPrompt, setShowDeleteCemeteryPrompt] = useState(false);
@@ -1837,17 +2112,17 @@ export default function EngineerWorkspacePage() {
     setConnectingNodeId(null);
   };
 
-  // Auto-open "Add Cemetery Map" modal for newly created or reset engineer accounts
+  // Auto-open "Add Cemetery Map" modal only for newly created / fresh engineer accounts
   useEffect(() => {
     if (user && user.role === 'engineer') {
       const storageKey = `has_seen_add_cemetery_map_${user.id}`;
       const hasSeenAddModal = localStorage.getItem(storageKey);
 
-      if (!hasSeenAddModal || cemeteries.length === 0) {
+      if (!hasSeenAddModal) {
         setShowAddModal(true);
       }
     }
-  }, [user, cemeteries.length]);
+  }, [user]);
 
   const handleCloseAddModal = () => {
     if (user?.id) {
@@ -1862,49 +2137,106 @@ export default function EngineerWorkspacePage() {
   const [editCemeteryLocationInput, setEditCemeteryLocationInput] = useState('');
 
   // Polygon Coordinates for Himlayan Cemetery
-  const [polygonCoords, setPolygonCoords] = useState<[number, number][]>([
-    [14.6750, 121.0370],
-    [14.6750, 121.0450],
-    [14.6650, 121.0450],
-    [14.6650, 121.0370],
-  ]);
+  const [polygonCoords, setPolygonCoords] = useState<[number, number][]>(DEFAULT_HIMLAYAN_POLYGON);
 
   // Load existing cemetery map GeoJSON and plots on mount
   useEffect(() => {
+    const DEFAULT_CENTER: [number, number] = DEFAULT_MAP_CENTER;
+
+    const buildCemeteryItemFromMap = (m: any): {
+      id: string;
+      name: string;
+      location: string;
+      polygonCoords: [number, number][];
+      geojsonText: string;
+      center: [number, number];
+    } => {
+      const props = m.boundary_data?.features?.[0]?.properties || {};
+      const geometry = m.boundary_data?.features?.[0]?.geometry;
+      let polygonCoords: [number, number][] = [];
+      if (geometry?.type === 'Polygon' && Array.isArray(geometry.coordinates?.[0])) {
+        polygonCoords = geometry.coordinates[0]
+          .filter((c: any) => Array.isArray(c) && c.length >= 2)
+          .map((c: any) => [parseFloat(c[1]), parseFloat(c[0])] as [number, number]);
+      }
+      const first = polygonCoords[0] || DEFAULT_CENTER;
+      return {
+        id: m.cemetery_id || m.id,
+        name: props.name || m.name || 'Himlayan Memorial Park',
+        location: props.location || 'Metro Manila',
+        polygonCoords,
+        geojsonText: JSON.stringify(m.boundary_data || { type: 'FeatureCollection', features: [] }, null, 2),
+        center: first,
+      };
+    };
+
     const fetchMapAndPlots = async () => {
       try {
-        const [mapRes, plotsRes] = await Promise.all([
+        const [mapRes, plotsRes, connRes] = await Promise.all([
           window.axios.get('/api/cemetery-map'),
           window.axios.get('/api/plots', { params: { limit: 10000 } }),
+          window.axios.get('/api/plot-connections').catch(() => ({ data: { success: false, data: [] } })),
         ]);
 
-        if (mapRes.data?.success && mapRes.data.data) {
-          const mapData = mapRes.data.data;
-          const loadedName = mapData.name || 'Himlayan Memorial Park';
-          const loadedLoc = mapData.location || 'Metro Manila';
-          setCemeteryName(loadedName);
-          setLocation(loadedLoc);
-          setDescription(mapData.description || description);
-          let loadedGeo = '';
-          if (mapData.boundary_data) {
-            loadedGeo = JSON.stringify(mapData.boundary_data, null, 2);
-            setGeojsonText(loadedGeo);
+        if (mapRes.data?.success && Array.isArray(mapRes.data.data) && mapRes.data.data.length > 0) {
+          const maps = mapRes.data.data;
+          const byId = new Map<string, { id: string; name: string; location: string; polygonCoords: [number, number][]; geojsonText: string; center: [number, number] }>();
+          maps.forEach((m: any) => {
+            const item = buildCemeteryItemFromMap(m);
+            byId.set(item.id, item);
+          });
+          const built = Array.from(byId.values());
+
+          const hasBaselinePlots = (plotsRes.data?.data ?? []).some((p: any) => !p.cemetery_id);
+          if (hasBaselinePlots && !built.some((c: { id: string }) => c.id === DEFAULT_CEMETERY_ID)) {
+            built.push({
+              id: DEFAULT_CEMETERY_ID,
+              name: 'Himlayan Memorial Park',
+              location: 'Metro Manila',
+              polygonCoords: DEFAULT_HIMLAYAN_POLYGON,
+              geojsonText: '',
+              center: DEFAULT_CENTER,
+            });
           }
-          setCemeteries([
-            {
-              id: 'default-himlayan',
-              name: loadedName,
-              location: loadedLoc,
-              polygonCoords: [
-                [14.6750, 121.0370],
-                [14.6750, 121.0450],
-                [14.6650, 121.0450],
-                [14.6650, 121.0370],
-              ],
-              geojsonText: loadedGeo,
-              center: [14.6710, 121.0415],
+
+          const plotsList: any[] = plotsRes.data?.data ?? [];
+
+          const createdAtOf = new Map<string, number>();
+          (maps as any[]).forEach((m) => {
+            const id = m.cemetery_id || m.id;
+            const t = new Date(m.created_at || 0).getTime();
+            const existing = createdAtOf.get(id);
+            if (existing === undefined || t < existing) {
+              createdAtOf.set(id, t);
             }
-          ]);
+          });
+
+          const orderedByCreated = [...built].sort(
+            (a, b) => (createdAtOf.get(a.id) || 0) - (createdAtOf.get(b.id) || 0)
+          );
+
+          const hasData = (id: string) =>
+            plotsList.some((p) => (p.cemetery_id || DEFAULT_CEMETERY_ID) === id);
+
+          const target =
+            orderedByCreated.find((c) => hasData(c.id) || c.polygonCoords.length > 0) ||
+            orderedByCreated[0] ||
+            built[0];
+
+          setCemeteries(orderedByCreated);
+          setActiveCemeteryId((prev) => {
+            const prevHasData = built.some((c) => c.id === prev && hasData(c.id));
+            return prevHasData ? prev : target.id;
+          });
+          setCemeteryName(target.name);
+          setLocation(target.location);
+          setDescription((target as any).description || '');
+          setGeojsonText(target.geojsonText);
+          setPolygonCoords(target.polygonCoords);
+          setNeedsBorderNode(target.polygonCoords.length === 0);
+          if (map && target.center) {
+            map.flyTo(target.center, FOCUS_ZOOM_LEVEL, { duration: FLY_DURATION_SECONDS });
+          }
         } else {
           // Initialize default GeoJSON
           const defaultGeoJson = {
@@ -1924,18 +2256,32 @@ export default function EngineerWorkspacePage() {
           setGeojsonText(defGeoStr);
           setCemeteries([
             {
-              id: 'default-himlayan',
+              id: DEFAULT_CEMETERY_ID,
               name: 'Himlayan Memorial Park',
               location: 'Metro Manila',
               polygonCoords: polygonCoords,
               geojsonText: defGeoStr,
-              center: [14.6710, 121.0415],
+              center: DEFAULT_MAP_CENTER,
             }
           ]);
         }
 
         if (plotsRes.data?.success) {
           setPlots(plotsRes.data.data || []);
+        }
+
+        if (connRes.data?.success && Array.isArray(connRes.data.data)) {
+          const loadedConnections = connRes.data.data.map((conn: any) => ({
+            id: conn.id,
+            fromId: conn.from_plot_id,
+            toId: conn.to_plot_id,
+            cemetery_id: conn.cemetery_id || undefined,
+          }));
+          setConnections((prev) => {
+            const existingIds = new Set(prev.map((c) => c.id));
+            const newConns = loadedConnections.filter((c: any) => !existingIds.has(c.id));
+            return [...prev, ...newConns];
+          });
         }
       } catch (err) {
         console.error('Error loading engineer workspace data:', err);
@@ -1955,6 +2301,17 @@ export default function EngineerWorkspacePage() {
     };
   }, []);
 
+  // Fly to the active cemetery whenever the map becomes available or the selection changes
+  useEffect(() => {
+    if (!map || !activeCemeteryId) return;
+    if (lastFlownCemeteryRef.current === activeCemeteryId) return;
+    const cem = cemeteries.find((c) => c.id === activeCemeteryId);
+    if (cem?.center) {
+      lastFlownCemeteryRef.current = activeCemeteryId;
+      map.flyTo(cem.center, FOCUS_ZOOM_LEVEL, { duration: FLY_DURATION_SECONDS });
+    }
+  }, [map, activeCemeteryId, cemeteries]);
+
   // Delete cemetery action
   const handleConfirmDeleteCemetery = async () => {
     if (!cemeteryToDelete) return;
@@ -1962,7 +2319,7 @@ export default function EngineerWorkspacePage() {
 
     // Filter out target plots
     const targetPlots = plots.filter(
-      (p) => (p.cemetery_id || 'default-himlayan') === targetId || (targetId === 'default-himlayan' && !p.cemetery_id)
+      (p) => (p.cemetery_id || DEFAULT_CEMETERY_ID) === targetId || (targetId === DEFAULT_CEMETERY_ID && !p.cemetery_id)
     );
 
     for (const p of targetPlots) {
@@ -1976,13 +2333,23 @@ export default function EngineerWorkspacePage() {
     setPlots((prev) =>
       prev.filter(
         (p) =>
-          (p.cemetery_id || 'default-himlayan') !== targetId &&
-          !(targetId === 'default-himlayan' && !p.cemetery_id)
+          (p.cemetery_id || DEFAULT_CEMETERY_ID) !== targetId &&
+          !(targetId === DEFAULT_CEMETERY_ID && !p.cemetery_id)
       )
     );
 
     const remaining = cemeteries.filter((c) => c.id !== targetId);
     setCemeteries(remaining);
+
+    if (targetId !== DEFAULT_CEMETERY_ID) {
+      try {
+        await window.axios.delete('/api/cemetery-map', {
+          params: { cemetery_id: targetId },
+        });
+      } catch (err) {
+        console.error('Error deleting cemetery identity:', err);
+      }
+    }
 
     if (activeCemeteryId === targetId) {
       if (remaining.length > 0) {
@@ -1994,7 +2361,7 @@ export default function EngineerWorkspacePage() {
         setGeojsonText(nextCem.geojsonText);
         setNeedsBorderNode(nextCem.polygonCoords.length === 0);
         if (map && nextCem.center) {
-          map.flyTo(nextCem.center, 17, { duration: 0.4 });
+          map.flyTo(nextCem.center, FOCUS_ZOOM_LEVEL, { duration: FLY_DURATION_SECONDS });
         }
       } else {
         setActiveCemeteryId('');
@@ -2014,7 +2381,7 @@ export default function EngineerWorkspacePage() {
   useEffect(() => {
     if (!activeCemeteryId) return;
     const cemeteryBorders = plots.filter(
-      (p) => p.lot_type === 'border' && (p.cemetery_id || 'default-himlayan') === activeCemeteryId
+      (p) => p.lot_type === 'border' && (p.cemetery_id || DEFAULT_CEMETERY_ID) === activeCemeteryId
     );
 
     setConnections((prevConn) => {
@@ -2027,7 +2394,7 @@ export default function EngineerWorkspacePage() {
       });
 
       if (cemeteryBorders.length >= 2) {
-        const sorted = sortBorderPlotsSequentially(cemeteryBorders);
+        const sorted = sortBorderPlotsByPlacement(cemeteryBorders);
 
         const newBorderConns: Array<{ id: string; fromId: string; toId: string; cemetery_id: string }> = [];
         for (let i = 0; i < sorted.length; i++) {
@@ -2047,7 +2414,7 @@ export default function EngineerWorkspacePage() {
     });
 
     if (cemeteryBorders.length >= 3) {
-      const sorted = sortBorderPlotsSequentially(cemeteryBorders);
+      const sorted = sortBorderPlotsByPlacement(cemeteryBorders);
       setPolygonCoords(sorted.map((b) => [b.lat || 0, b.lng || 0] as [number, number]));
       setNeedsBorderNode(false);
     } else {
@@ -2060,10 +2427,9 @@ export default function EngineerWorkspacePage() {
     setSaving(true);
     setSavedSuccess(false);
     try {
-      let parsedJson = {};
-      try {
-        parsedJson = JSON.parse(geojsonText);
-      } catch (e) {
+      const hasPolygon = Array.isArray(polygonCoords) && polygonCoords.length >= 3;
+      let parsedJson: any;
+      if (hasPolygon) {
         parsedJson = {
           type: 'FeatureCollection',
           features: [
@@ -2077,12 +2443,19 @@ export default function EngineerWorkspacePage() {
             },
           ],
         };
+      } else {
+        try {
+          parsedJson = JSON.parse(geojsonText);
+        } catch (e) {
+          parsedJson = { type: 'FeatureCollection', features: [] };
+        }
       }
 
       const res = await window.axios.post('/api/cemetery-map', {
         name: cemeteryName,
         description,
         boundary_data: parsedJson,
+        cemetery_id: activeCemeteryId,
       });
 
       if (res.data?.success) {
@@ -2101,8 +2474,8 @@ export default function EngineerWorkspacePage() {
     const addedName = newCemeteryNameInput.trim();
     const addedLocation = newLocationInput.trim() || 'Solano';
 
-    let lat = 14.6710;
-    let lon = 121.0415;
+    let lat = DEFAULT_MAP_CENTER[0];
+    let lon = DEFAULT_MAP_CENTER[1];
 
     if (selectedLocationCoords) {
       lat = selectedLocationCoords[0];
@@ -2125,7 +2498,7 @@ export default function EngineerWorkspacePage() {
     setActiveGisTool('border');
 
     if (map) {
-      map.flyTo([lat, lon], 17, { duration: 0.4 });
+      map.flyTo([lat, lon], FOCUS_ZOOM_LEVEL, { duration: FLY_DURATION_SECONDS });
     }
 
     setCemeteryName(addedName);
@@ -2150,6 +2523,17 @@ export default function EngineerWorkspacePage() {
 
     setCemeteries((prev) => [...prev, newCemeteryItem]);
     setActiveCemeteryId(newId);
+
+    try {
+      await window.axios.post('/api/cemetery-map', {
+        name: addedName,
+        description: '',
+        boundary_data: newGeoJson,
+        cemetery_id: newId,
+      });
+    } catch (err) {
+      console.error('Error persisting new cemetery identity:', err);
+    }
 
     if (user?.id) {
       localStorage.setItem(`has_seen_add_cemetery_map_${user.id}`, 'true');
@@ -2197,12 +2581,103 @@ export default function EngineerWorkspacePage() {
   };
 
   const filteredPlots = plots.filter((p) => {
-    if ((p.cemetery_id || 'default-himlayan') !== activeCemeteryId) return false;
+    if ((p.cemetery_id || DEFAULT_CEMETERY_ID) !== activeCemeteryId) return false;
     return searchQuery
       ? p.plot_number.toLowerCase().includes(searchQuery.toLowerCase()) ||
         p.section.toLowerCase().includes(searchQuery.toLowerCase())
       : true;
   });
+
+  const handleUpdateSelection = (id: string, updates: any) => {
+    const isMulti = selectedPlots.length > 1 && selectedPlots.some((item) => item.id === id);
+    if (isMulti) {
+      if (Object.keys(dragStartRotationsRef.current).length === 0) {
+        const initialRotations: Record<string, number> = {};
+        const initialPositions: Record<string, { lat: number; lng: number }> = {};
+        selectedPlots.forEach((item) => {
+          initialRotations[item.id] = item.rotation || 0;
+          initialPositions[item.id] = { lat: item.lat || FALLBACK_PLOT_LAT, lng: item.lng || FALLBACK_PLOT_LNG };
+        });
+        dragStartRotationsRef.current = initialRotations;
+        dragStartPlotsPositionsRef.current = initialPositions;
+      }
+
+      const deltaRotation = updates.rotation !== undefined ? (updates.rotation - (dragStartRotationsRef.current[id] || 0)) : 0;
+
+      const positions = Object.values(dragStartPlotsPositionsRef.current) as Array<{ lat: number; lng: number }>;
+      const cLat = positions.reduce((sum, p) => sum + p.lat, 0) / positions.length;
+      const cLng = positions.reduce((sum, p) => sum + p.lng, 0) / positions.length;
+
+      const rad = -(deltaRotation * Math.PI) / 180;
+
+      const updatedPositionsMap = new Map<string, { lat: number; lng: number; rotation?: number }>();
+
+      selectedPlots.forEach((item) => {
+        const initPos = dragStartPlotsPositionsRef.current[item.id] || { lat: item.lat || FALLBACK_PLOT_LAT, lng: item.lng || FALLBACK_PLOT_LNG };
+        const dLat = initPos.lat - cLat;
+        const dLng = initPos.lng - cLng;
+        const newLat = cLat + dLat * Math.cos(rad) + dLng * Math.sin(rad);
+        const newLng = cLng - dLat * Math.sin(rad) + dLng * Math.cos(rad);
+        const newRot = updates.rotation !== undefined ? ((dragStartRotationsRef.current[item.id] || 0) + deltaRotation) : item.rotation;
+
+        updatedPositionsMap.set(item.id, { lat: newLat, lng: newLng, rotation: newRot });
+
+        const marker = markerRefs.current.get(item.id);
+        if (marker) {
+          marker.setLatLng([newLat, newLng]);
+        }
+      });
+
+      setPlots((prev) => prev.map((item) => {
+        const newCoords = updatedPositionsMap.get(item.id);
+        if (newCoords) {
+          const nextItem = { ...item, lat: newCoords.lat, lng: newCoords.lng };
+          if (newCoords.rotation !== undefined) nextItem.rotation = newCoords.rotation;
+          if (updates.width !== undefined) nextItem.width = updates.width;
+          if (updates.height !== undefined) nextItem.height = updates.height;
+          return nextItem;
+        }
+        return item;
+      }));
+
+      setSelectedPlots((prev) => prev.map((item) => {
+        const newCoords = updatedPositionsMap.get(item.id);
+        if (newCoords) {
+          const nextItem = { ...item, lat: newCoords.lat, lng: newCoords.lng };
+          if (newCoords.rotation !== undefined) nextItem.rotation = newCoords.rotation;
+          if (updates.width !== undefined) nextItem.width = updates.width;
+          if (updates.height !== undefined) nextItem.height = updates.height;
+          return nextItem;
+        }
+        return item;
+      }));
+
+      if ((updates as any)._isFinal) {
+        const { _isFinal, ...cleanUpdates } = updates as any;
+        selectedPlots.forEach((item) => {
+          const newCoords = updatedPositionsMap.get(item.id);
+          const nextClean = { ...cleanUpdates };
+          if (newCoords) {
+            nextClean.lat = newCoords.lat;
+            nextClean.lng = newCoords.lng;
+            if (newCoords.rotation !== undefined) nextClean.rotation = newCoords.rotation;
+          }
+          updatePlotField(item.id, nextClean);
+        });
+        dragStartRotationsRef.current = {};
+        dragStartPlotsPositionsRef.current = {};
+      }
+    } else {
+      setPlots((prev) => prev.map((item) => (item.id === id ? { ...item, ...updates } : item)));
+      setSelectedPlots((prev) => prev.map((item) => (item.id === id ? { ...item, ...updates } : item)));
+      setSelectedPlot((prev) => (prev && prev.id === id ? { ...prev, ...updates } : prev));
+
+      if ((updates as any)._isFinal) {
+        const { _isFinal, ...cleanUpdates } = updates as any;
+        updatePlotField(id, cleanUpdates);
+      }
+    }
+  };
 
   return (
     <div className="h-screen w-screen bg-slate-950 font-body text-slate-900 flex flex-col relative overflow-hidden">
@@ -2288,7 +2763,7 @@ export default function EngineerWorkspacePage() {
                       setGeojsonText(cem.geojsonText);
                       setNeedsBorderNode(cem.polygonCoords.length === 0);
                       if (map && cem.center) {
-                        map.flyTo(cem.center, 17, { duration: 0.4 });
+                        map.flyTo(cem.center, FOCUS_ZOOM_LEVEL, { duration: FLY_DURATION_SECONDS });
                       }
                     }}
                     className={`w-full text-slate-900 rounded-full px-4 py-2.5 text-xs font-bold font-body flex items-center justify-between shadow-sm border transition-all cursor-pointer ${
@@ -2348,8 +2823,8 @@ export default function EngineerWorkspacePage() {
         </div>
 
         <MapContainer
-          center={[14.6710, 121.0415]}
-          zoom={16}
+          center={DEFAULT_MAP_CENTER}
+          zoom={DEFAULT_MAP_ZOOM}
           maxZoom={24}
           scrollWheelZoom={true}
           dragging={true}
@@ -2360,31 +2835,46 @@ export default function EngineerWorkspacePage() {
         >
           <ZoomControl position="bottomright" />
           <MapResizer />
-          <MapEventsCapture
-            setMapInstance={setMap}
-            onMapClick={handleMapClick}
-            onDropTool={addPlotAtLocation}
-            activeGisTool={activeGisTool}
-            setActiveGisTool={setActiveGisTool}
-            plots={plots.filter((p) => (p.cemetery_id || 'default-himlayan') === activeCemeteryId)}
-            ignoreMapClickRef={ignoreMapClickRef}
-            onPlotsSelected={(selected, isAppend) => {
-              if (isAppend) {
-                setSelectedPlots((prev) => {
-                  const existingIds = new Set(prev.map((p) => p.id));
-                  const combined = [...prev, ...selected.filter((p) => !existingIds.has(p.id))];
-                  return combined;
-                });
-              } else {
-                setSelectedPlots(selected);
-              }
-              if (selected.length > 0) {
-                setSelectedPlot(null); // Clear single selection if multiple selected
-              }
-            }}
-          />
+            <MapEventsCapture
+              setMapInstance={setMap}
+              onMapClick={handleMapClick}
+              onDropTool={addPlotAtLocation}
+              activeGisTool={activeGisTool}
+              setActiveGisTool={setActiveGisTool}
+              plots={useMemo(
+                () => plots.filter((p) => (p.cemetery_id || DEFAULT_CEMETERY_ID) === activeCemeteryId),
+                [plots, activeCemeteryId]
+              )}
+              ignoreMapClickRef={ignoreMapClickRef}
+              onPlotsSelected={useCallback((selected: Plot[], isAppend?: boolean) => {
+                if (isAppend) {
+                  setSelectedPlots((prev) => {
+                    const existingIds = new Set(prev.map((p) => p.id));
+                    const combined = [...prev, ...selected.filter((p) => !existingIds.has(p.id))];
+                    return combined;
+                  });
+                } else {
+                  setSelectedPlots(selected);
+                }
+                if (selected.length > 0) {
+                  setSelectedPlot(null); // Clear single selection if multiple selected
+                }
+              }, [])}
+            />
           
           {(() => {
+            if (selectedPlots.length > 1) {
+              return (
+                <MultiSelectOverlay
+                  plots={selectedPlots}
+                  map={map}
+                  zoomLevel={zoomLevel}
+                  ignoreMapClickRef={ignoreMapClickRef}
+                  onDelete={() => removeMultiplePlots(selectedPlots)}
+                  onUpdate={handleUpdateSelection}
+                />
+              );
+            }
             const activeOverlays = selectedPlots.length > 0 ? selectedPlots : (selectedPlot ? [selectedPlot] : []);
             return activeOverlays.map((p, idx) => (
               <PlotEditorOverlay 
@@ -2397,110 +2887,7 @@ export default function EngineerWorkspacePage() {
                 ignoreMapClickRef={ignoreMapClickRef}
                 hideControls={selectedPlots.length > 1 && idx !== 0}
                 activeGisTool={activeGisTool}
-                 onUpdate={(id, updates) => {
-                  const isMulti = selectedPlots.length > 1 && selectedPlots.some(item => item.id === id);
-                  if (isMulti) {
-                    if (Object.keys(dragStartRotationsRef.current).length === 0) {
-                      const initialRotations: Record<string, number> = {};
-                      const initialPositions: Record<string, { lat: number; lng: number }> = {};
-                      selectedPlots.forEach(item => {
-                        initialRotations[item.id] = item.rotation || 0;
-                        initialPositions[item.id] = { lat: item.lat || 14.6720, lng: item.lng || 121.0410 };
-                      });
-                      dragStartRotationsRef.current = initialRotations;
-                      dragStartPlotsPositionsRef.current = initialPositions;
-                    }
-
-                    const deltaRotation = updates.rotation !== undefined ? (updates.rotation - (dragStartRotationsRef.current[id] || 0)) : 0;
-                    
-                    const positions = Object.values(dragStartPlotsPositionsRef.current) as Array<{ lat: number; lng: number }>;
-                    const cLat = positions.reduce((sum, p) => sum + p.lat, 0) / positions.length;
-                    const cLng = positions.reduce((sum, p) => sum + p.lng, 0) / positions.length;
-                    // Negate rad to convert from screen rotation (Y-down) to map coordinate rotation (latitude Y-up, clockwise)
-                    const rad = -(deltaRotation * Math.PI) / 180;
-
-                    const updatedPositionsMap = new Map<string, { lat: number; lng: number; rotation?: number }>();
-
-                    selectedPlots.forEach(item => {
-                       const initPos = dragStartPlotsPositionsRef.current[item.id] || { lat: item.lat || 14.6720, lng: item.lng || 121.0410 };
-                       const dLat = initPos.lat - cLat;
-                       const dLng = initPos.lng - cLng;
-                       const newLat = cLat + dLat * Math.cos(rad) + dLng * Math.sin(rad);
-                       const newLng = cLng - dLat * Math.sin(rad) + dLng * Math.cos(rad);
-                       const newRot = updates.rotation !== undefined ? ((dragStartRotationsRef.current[item.id] || 0) + deltaRotation) : item.rotation;
-
-                      updatedPositionsMap.set(item.id, { lat: newLat, lng: newLng, rotation: newRot });
-
-                      const marker = markerRefs.current.get(item.id);
-                      if (marker) {
-                        marker.setLatLng([newLat, newLng]);
-                      }
-                    });
-
-                    setPlots(prev => prev.map(item => {
-                      const newCoords = updatedPositionsMap.get(item.id);
-                      if (newCoords) {
-                        const nextItem = { ...item, lat: newCoords.lat, lng: newCoords.lng };
-                        if (newCoords.rotation !== undefined) {
-                          nextItem.rotation = newCoords.rotation;
-                        }
-                        if (updates.width !== undefined) {
-                          nextItem.width = updates.width;
-                        }
-                        if (updates.height !== undefined) {
-                          nextItem.height = updates.height;
-                        }
-                        return nextItem;
-                      }
-                      return item;
-                    }));
-
-                    setSelectedPlots(prev => prev.map(item => {
-                      const newCoords = updatedPositionsMap.get(item.id);
-                      if (newCoords) {
-                        const nextItem = { ...item, lat: newCoords.lat, lng: newCoords.lng };
-                        if (newCoords.rotation !== undefined) {
-                          nextItem.rotation = newCoords.rotation;
-                        }
-                        if (updates.width !== undefined) {
-                          nextItem.width = updates.width;
-                        }
-                        if (updates.height !== undefined) {
-                          nextItem.height = updates.height;
-                        }
-                        return nextItem;
-                      }
-                      return item;
-                    }));
-
-                    if ((updates as any)._isFinal) {
-                      const { _isFinal, ...cleanUpdates } = updates as any;
-                      selectedPlots.forEach(item => {
-                        const newCoords = updatedPositionsMap.get(item.id);
-                        const nextClean = { ...cleanUpdates };
-                        if (newCoords) {
-                          nextClean.lat = newCoords.lat;
-                          nextClean.lng = newCoords.lng;
-                          if (newCoords.rotation !== undefined) {
-                            nextClean.rotation = newCoords.rotation;
-                          }
-                        }
-                        updatePlotField(item.id, nextClean);
-                      });
-                      dragStartRotationsRef.current = {};
-                      dragStartPlotsPositionsRef.current = {};
-                    }
-                  } else {
-                    setPlots(prev => prev.map(item => item.id === id ? { ...item, ...updates } : item));
-                    setSelectedPlots(prev => prev.map(item => item.id === id ? { ...item, ...updates } : item));
-                    setSelectedPlot(prev => prev && prev.id === id ? { ...prev, ...updates } : prev);
-                    
-                    if ((updates as any)._isFinal) {
-                      const { _isFinal, ...cleanUpdates } = updates as any;
-                      updatePlotField(id, cleanUpdates);
-                    }
-                  }
-                }}
+                onUpdate={handleUpdateSelection}
               />
             ));
           })()}
@@ -2515,7 +2902,7 @@ export default function EngineerWorkspacePage() {
 
           {/* Master Perimeter Polygon Overlay (Clustered per distinct border group) */}
           {(() => {
-            const borderPlots = plots.filter((p) => p.lot_type === 'border' && (p.cemetery_id || 'default-himlayan') === activeCemeteryId);
+            const borderPlots = plots.filter((p) => p.lot_type === 'border' && (p.cemetery_id || DEFAULT_CEMETERY_ID) === activeCemeteryId);
             if (borderPlots.length === 0) {
               if (polygonCoords.length >= 3) {
                 return (
@@ -2594,10 +2981,10 @@ export default function EngineerWorkspacePage() {
                   if (path.length === cluster.length) {
                     sortedCluster = path;
                   } else {
-                    sortedCluster = sortBorderPlotsSequentially(cluster);
+                    sortedCluster = sortBorderPlotsByPlacement(cluster);
                   }
 
-                  const polyCoords: [number, number][] = sortedCluster.map((p) => [p.lat || 14.6720, p.lng || 121.0410] as [number, number]);
+                  const polyCoords: [number, number][] = sortedCluster.map((p) => [p.lat || FALLBACK_PLOT_LAT, p.lng || FALLBACK_PLOT_LNG] as [number, number]);
 
                   if (polyCoords.length < 2) return null;
 
@@ -2639,10 +3026,10 @@ export default function EngineerWorkspacePage() {
               const fromPlot = plots.find((p) => p.id === conn.fromId);
               const toPlot = plots.find((p) => p.id === conn.toId);
               if (!fromPlot || !toPlot) return null;
-              const fLat = fromPlot.lat || 14.6720;
-              const fLng = fromPlot.lng || 121.0410;
-              const tLat = toPlot.lat || 14.6720;
-              const tLng = toPlot.lng || 121.0410;
+              const fLat = fromPlot.lat || FALLBACK_PLOT_LAT;
+              const fLng = fromPlot.lng || FALLBACK_PLOT_LNG;
+              const tLat = toPlot.lat || FALLBACK_PLOT_LAT;
+              const tLng = toPlot.lng || FALLBACK_PLOT_LNG;
               return (
                 <Polyline
                   key={conn.id}
@@ -2671,7 +3058,7 @@ export default function EngineerWorkspacePage() {
                     markerRefs.current.delete(plot.id);
                   }
                 }}
-                position={[plot.lat || 14.6720, plot.lng || 121.0410]}
+                position={[plot.lat || FALLBACK_PLOT_LAT, plot.lng || FALLBACK_PLOT_LNG]}
                 icon={createPlotIcon(
                   plot,
                   selectedPlots.some((p) => p.id === plot.id),
@@ -2690,6 +3077,7 @@ export default function EngineerWorkspacePage() {
                   (marker as any).plotId = plot.id;
                   const startPos = marker.getLatLng();
                   dragStartLatLngRef.current = startPos;
+                  dragLastGoodPosRef.current = { lat: startPos.lat, lng: startPos.lng };
 
                   const isPlotSelected = selectedPlots.some((p) => p.id === plot.id);
                   const initialPositions: Record<string, { lat: number; lng: number }> = {};
@@ -2697,8 +3085,8 @@ export default function EngineerWorkspacePage() {
                   const activeSelection = (isPlotSelected && selectedPlots.length > 0) ? selectedPlots : [plot];
                   activeSelection.forEach((p) => {
                     initialPositions[p.id] = {
-                      lat: p.lat || 14.6720,
-                      lng: p.lng || 121.0410
+                      lat: p.lat || FALLBACK_PLOT_LAT,
+                      lng: p.lng || FALLBACK_PLOT_LNG
                     };
                   });
                   dragStartPlotsPositionsRef.current = initialPositions;
@@ -2728,6 +3116,41 @@ export default function EngineerWorkspacePage() {
                   const startPos = dragStartLatLngRef.current;
                   const deltaLat = currentPos.lat - startPos.lat;
                   const deltaLng = currentPos.lng - startPos.lng;
+
+                  // Live boundary clamp: keep the dragged marker inside the placed border perimeter
+                  const boundary = getActiveBoundaryPolygon(plots, activeCemeteryId, polygonCoords);
+                  const primaryIsBorder = plot.lot_type === 'border';
+                  const proposed: [number, number] = [startPos.lat + deltaLat, startPos.lng + deltaLng];
+                  let allowMove = primaryIsBorder || boundary.length < 3 || isPointInPolygon(proposed, boundary);
+
+                  // Border node drag must not push any asset (box / node) outside the enclosed perimeter
+                  if (allowMove && primaryIsBorder) {
+                    const proposedPolygon = getProposedBoundaryPolygon(plots, activeCemeteryId, plot.id, proposed);
+                    if (proposedPolygon.length >= 3) {
+                      const oldBoundary = getActiveBoundaryPolygon(plots, activeCemeteryId, polygonCoords);
+                      const initialPositions = dragStartPlotsPositionsRef.current;
+                      const anyAssetEjected = plots.some((p) => {
+                        if (p.lot_type === 'border') return false;
+                        if ((p.cemetery_id || DEFAULT_CEMETERY_ID) !== activeCemeteryId) return false;
+                        const init = initialPositions[p.id];
+                        const assetLat = init ? init.lat + deltaLat : (p.lat || FALLBACK_PLOT_LAT);
+                        const assetLng = init ? init.lng + deltaLng : (p.lng || FALLBACK_PLOT_LNG);
+                        const wasInside = oldBoundary.length < 3 || isPointInPolygon([assetLat, assetLng], oldBoundary);
+                        const willBeInside = isPointInPolygon([assetLat, assetLng], proposedPolygon);
+                        return wasInside && !willBeInside;
+                      });
+                      if (anyAssetEjected) {
+                        allowMove = false;
+                      }
+                    }
+                  }
+
+                  if (!allowMove) {
+                    const good = dragLastGoodPosRef.current || { lat: startPos.lat, lng: startPos.lng };
+                    marker.setLatLng([good.lat, good.lng]);
+                    return;
+                  }
+                  dragLastGoodPosRef.current = { lat: startPos.lat + deltaLat, lng: startPos.lng + deltaLng };
 
                   if (dragOtherMarkersRef.current) {
                     dragOtherMarkersRef.current.forEach(({ layer, initialLat, initialLng }) => {
@@ -2761,14 +3184,8 @@ export default function EngineerWorkspacePage() {
                   const deltaLng = currentPos.lng - startPos.lng;
 
                   // Verify boundary constraints
-                  let activePolygon: [number, number][] = [];
-                  const activeBorders = plots.filter((p) => p.lot_type === 'border' && (p.cemetery_id || 'default-himlayan') === activeCemeteryId);
-                  if (activeBorders.length >= 3) {
-                    const sorted = sortBorderPlotsSequentially(activeBorders);
-                    activePolygon = sorted.map((p) => [p.lat || 14.6720, p.lng || 121.0410] as [number, number]);
-                  } else if (activeBorders.length === 0 && polygonCoords.length >= 3) {
-                    activePolygon = polygonCoords;
-                  }
+                  const isPlotSelected = selectedPlots.some((p) => p.id === plot.id);
+                  const activePolygon = getActiveBoundaryPolygon(plots, activeCemeteryId, polygonCoords);
 
                   if (activePolygon.length >= 3 && plot.lot_type !== 'border') {
                     const isInside = isPointInPolygon([currentPos.lat, currentPos.lng], activePolygon);
@@ -2779,16 +3196,38 @@ export default function EngineerWorkspacePage() {
                           layer.setLatLng([initialLat, initialLng]);
                         });
                       }
+                      // Revert React state back to pre-drag positions
+                      setPlots((prev) =>
+                        prev.map((p) => {
+                          const initial = dragStartPlotsPositionsRef.current[p.id];
+                          if (initial) return { ...p, lat: initial.lat, lng: initial.lng };
+                          return p;
+                        })
+                      );
+                      if (isPlotSelected) {
+                        setSelectedPlots((prev) =>
+                          prev.map((p) => {
+                            const initial = dragStartPlotsPositionsRef.current[p.id];
+                            if (initial) return { ...p, lat: initial.lat, lng: initial.lng };
+                            return p;
+                          })
+                        );
+                      } else {
+                        const initial = dragStartPlotsPositionsRef.current[plot.id];
+                        if (initial) {
+                          setSelectedPlot((p) => p && p.id === plot.id ? { ...p, lat: initial.lat, lng: initial.lng } : p);
+                        }
+                      }
                       alert('Cannot move plot outside the created cemetery border perimeter.');
                       dragStartLatLngRef.current = null;
                       dragStartPlotsPositionsRef.current = {};
                       dragOtherMarkersRef.current = [];
+                      dragLastGoodPosRef.current = null;
                       setTimeout(() => { isDraggingRef.current = false; }, 150);
                       return;
                     }
                   }
 
-                  const isPlotSelected = selectedPlots.some((p) => p.id === plot.id);
                   const activeSelection = isPlotSelected && selectedPlots.length > 0 ? selectedPlots : [plot];
                   
                   const finalPositionsMap = new Map<string, { lat: number; lng: number }>();
@@ -2843,6 +3282,7 @@ export default function EngineerWorkspacePage() {
                   dragStartLatLngRef.current = null;
                   dragStartPlotsPositionsRef.current = {};
                   dragOtherMarkersRef.current = [];
+                  dragLastGoodPosRef.current = null;
 
                   setTimeout(() => {
                     isDraggingRef.current = false;
@@ -3417,33 +3857,18 @@ export default function EngineerWorkspacePage() {
                       {isApartment && (
                         <button
                           onClick={async () => {
+                            if (currentDeceased.length >= MAX_STACKS) return;
                             const nextNames = [...currentDeceased, ''];
                             const newCap = Math.max(activePlot.capacity || 1, nextNames.length);
-                            const filledCount = nextNames.filter((n) => n.trim().length > 0).length;
-                            const userNotes = getPlotUserNotes(activePlot.notes);
-                            const updated = {
-                              deceased_names: nextNames,
-                              capacity: newCap,
-                              current_occupants: filledCount,
-                              notes: JSON.stringify({ deceased_names: nextNames, user_notes: userNotes }),
-                            };
-                            setPlots((prev) => prev.map((p) => p.id === activePlot.id ? { ...p, ...updated } : p));
-                            setSelectedPlot((p) => p && p.id === activePlot.id ? { ...p, ...updated } : p);
-                            if (!activePlot.id.startsWith('plot-new-')) {
-                              try {
-                                await window.axios.put('/api/plots/' + activePlot.id, {
-                                  deceased_names: nextNames,
-                                  capacity: newCap,
-                                  current_occupants: filledCount,
-                                  notes: JSON.stringify({ deceased_names: nextNames, user_notes: userNotes }),
-                                });
-                              } catch (err) {
-                                console.error('Error adding stack level:', err);
-                              }
-                            }
+                            await applyDeceasedNamesUpdate(activePlot, nextNames, newCap);
                           }}
-                          className="text-[10px] font-bold bg-emerald-600 hover:bg-emerald-700 text-white px-2 py-0.5 rounded-lg transition-all cursor-pointer flex items-center gap-1 shadow-2xs"
-                          title="Add Stack Level"
+                          disabled={currentDeceased.length >= MAX_STACKS}
+                          className={`text-[10px] font-bold text-white px-2 py-0.5 rounded-lg transition-all cursor-pointer flex items-center gap-1 shadow-2xs ${
+                            currentDeceased.length >= MAX_STACKS
+                              ? 'bg-slate-300 cursor-not-allowed'
+                              : 'bg-emerald-600 hover:bg-emerald-700'
+                          }`}
+                          title={currentDeceased.length >= MAX_STACKS ? `Maximum ${MAX_STACKS} stacks` : 'Add Stack Level'}
                         >
                           <Plus className="w-3 h-3" />
                           <span>Add Stack</span>
@@ -3464,26 +3889,7 @@ export default function EngineerWorkspacePage() {
                             onChange={async (e) => {
                               const nextNames = [...currentDeceased];
                               nextNames[idx] = e.target.value;
-                              const filledCount = nextNames.filter((n) => n.trim().length > 0).length;
-                              const userNotes = getPlotUserNotes(activePlot.notes);
-                              const updated = {
-                                deceased_names: nextNames,
-                                current_occupants: filledCount,
-                                notes: JSON.stringify({ deceased_names: nextNames, user_notes: userNotes }),
-                              };
-                              setPlots((prev) => prev.map((p) => p.id === activePlot.id ? { ...p, ...updated } : p));
-                              setSelectedPlot((p) => p && p.id === activePlot.id ? { ...p, ...updated } : p);
-                              if (!activePlot.id.startsWith('plot-new-')) {
-                                try {
-                                  await window.axios.put('/api/plots/' + activePlot.id, {
-                                    deceased_names: nextNames,
-                                    current_occupants: filledCount,
-                                    notes: JSON.stringify({ deceased_names: nextNames, user_notes: userNotes }),
-                                  });
-                                } catch (err) {
-                                  console.error('Error saving deceased name:', err);
-                                }
-                              }
+                              await applyDeceasedNamesUpdate(activePlot, nextNames, activePlot.capacity || nextNames.length);
                             }}
                             className="flex-1 bg-white border border-slate-300 rounded-lg px-2 py-1 text-xs text-slate-900 focus:outline-none focus:border-emerald-600 focus:ring-1 focus:ring-emerald-500"
                           />
@@ -3492,28 +3898,7 @@ export default function EngineerWorkspacePage() {
                               onClick={async () => {
                                 const nextNames = currentDeceased.filter((_, i) => i !== idx);
                                 const newCap = Math.max(1, nextNames.length);
-                                const filledCount = nextNames.filter((n) => n.trim().length > 0).length;
-                                const userNotes = getPlotUserNotes(activePlot.notes);
-                                const updated = {
-                                  deceased_names: nextNames,
-                                  capacity: newCap,
-                                  current_occupants: filledCount,
-                                  notes: JSON.stringify({ deceased_names: nextNames, user_notes: userNotes }),
-                                };
-                                setPlots((prev) => prev.map((p) => p.id === activePlot.id ? { ...p, ...updated } : p));
-                                setSelectedPlot((p) => p && p.id === activePlot.id ? { ...p, ...updated } : p);
-                                if (!activePlot.id.startsWith('plot-new-')) {
-                                  try {
-                                    await window.axios.put('/api/plots/' + activePlot.id, {
-                                      deceased_names: nextNames,
-                                      capacity: newCap,
-                                      current_occupants: filledCount,
-                                      notes: JSON.stringify({ deceased_names: nextNames, user_notes: userNotes }),
-                                    });
-                                  } catch (err) {
-                                    console.error('Error removing stack level:', err);
-                                  }
-                                }
+                                await applyDeceasedNamesUpdate(activePlot, nextNames, newCap);
                               }}
                               className="p-1 text-slate-400 hover:text-rose-600 rounded cursor-pointer"
                               title="Remove Level"
@@ -3664,13 +4049,6 @@ export default function EngineerWorkspacePage() {
 
             <div className="pt-2.5 flex flex-col gap-2">
               <div className="flex gap-2">
-                <button
-                  onClick={() => duplicateMultiplePlots(selectedPlots)}
-                  className="flex-1 bg-slate-900 hover:bg-slate-800 text-white font-bold py-2.5 rounded-xl text-xs text-center transition-all cursor-pointer shadow-sm hover:shadow-md flex items-center justify-center gap-1.5"
-                >
-                  <Copy className="w-3.5 h-3.5 text-slate-300" />
-                  <span>Duplicate</span>
-                </button>
                 <button
                   onClick={() => removeMultiplePlots(selectedPlots)}
                   className="flex-1 bg-rose-600 hover:bg-rose-700 text-white font-bold py-2.5 rounded-xl text-xs text-center transition-all cursor-pointer shadow-sm hover:shadow-md flex items-center justify-center gap-1.5"

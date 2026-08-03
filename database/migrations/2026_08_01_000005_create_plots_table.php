@@ -17,7 +17,7 @@ return new class extends Migration
             $table->string('section', 5);
             $table->decimal('lat', 10, 7)->nullable();
             $table->decimal('lng', 10, 7)->nullable();
-            $table->enum('lot_type', ['single', 'family', 'apartment', 'path', 'border'])->default('single');
+            $table->enum('lot_type', ['single', 'family', 'apartment', 'path', 'border', 'entrance'])->default('single');
             $table->unsignedInteger('capacity')->default(1);
             $table->unsignedInteger('current_occupants')->default(0);
             $table->enum('status', ['available', 'reserved', 'occupied', 'full'])->default('available');

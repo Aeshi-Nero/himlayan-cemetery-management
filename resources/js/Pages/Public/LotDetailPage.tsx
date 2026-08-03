@@ -5,6 +5,7 @@ import L from 'leaflet';
 import { Navbar } from '@/Components/Public/Navbar';
 import { Plot } from '@/types';
 import { incrementMapUsageCount } from '@/utils/mapUsageTracker';
+import { FALLBACK_PLOT_LAT, FALLBACK_PLOT_LNG } from '@/constants/geo';
 import { MapPin, Navigation, ArrowLeft, Send, Camera } from 'lucide-react';
 
 import cemeteryLawnImg from '@/assets/images/cemetery_lawn_gardens_1784913858158.jpg';
@@ -108,8 +109,8 @@ export const LotDetailPage: React.FC<{ plotId?: string }> = ({ plotId }) => {
         );
     }
 
-    const plotLat = plot.lat || 14.6720;
-    const plotLng = plot.lng || 121.0410;
+    const plotLat = plot.lat || FALLBACK_PLOT_LAT;
+    const plotLng = plot.lng || FALLBACK_PLOT_LNG;
 
     return (
         <div className="min-h-screen bg-slate-50 text-slate-900 font-body pt-24 pb-16">

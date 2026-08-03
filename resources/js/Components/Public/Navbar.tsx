@@ -1,17 +1,20 @@
 import React, { useEffect, useState } from 'react';
 import { Link, usePage } from '@inertiajs/react';
 import { motion } from 'motion/react';
-import { MapPin, Grid, LogIn, LayoutDashboard, Home, Package, Landmark } from 'lucide-react';
+import {
+    MapPin,
+    LogIn,
+    LayoutDashboard,
+    Home,
+    FileSearch,
+} from 'lucide-react';
 import type { AuthUser } from '../../types/inertia';
 
 import solanoLguSealImg from '../../assets/images/solano_lgu_seal_1784964597638.jpg';
-import himlayanLogoOfficialImg from '../../assets/images/himlayan_logo_official_1785166790688.jpg';
+import himlayanLogoOfficialImg from '../../assets/images/himlayan_ng_bayan_logo_2026.png';
 
 const navLinks = [
     { name: 'Home Page', path: '/', icon: Home },
-    { name: 'Memorial Lots', path: '/lots', icon: Grid },
-    { name: 'Pre-Need Plans', path: '/plans', icon: Package },
-    { name: 'Columbarium', path: '/columbarium', icon: Landmark },
     { name: 'Interactive Map', path: '/map', icon: MapPin },
 ];
 
@@ -57,7 +60,7 @@ export const Navbar: React.FC = () => {
                         <img
                             src={himlayanLogoOfficialImg}
                             alt="Himlayan ng Bayan Logo"
-                            className="h-9 sm:h-10 max-w-[180px] sm:max-w-[220px] object-contain mix-blend-multiply group-hover:opacity-90 transition-opacity"
+                            className="h-9 sm:h-10 max-w-[180px] sm:max-w-[220px] object-contain group-hover:opacity-90 transition-opacity"
                         />
                     </div>
                 </Link>
@@ -82,6 +85,19 @@ export const Navbar: React.FC = () => {
                             </Link>
                         );
                     })}
+
+                    {/* Combined Memorial Inquiry Button */}
+                    <Link
+                        href="/lots"
+                        className={`flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-body font-semibold transition-all ${
+                            currentPath === '/lots'
+                                ? 'bg-emerald-700 text-white shadow-sm'
+                                : 'bg-emerald-700 text-white shadow-sm hover:bg-emerald-800'
+                        }`}
+                    >
+                        <FileSearch className="w-3.5 h-3.5" />
+                        Memorial Inquiry
+                    </Link>
                 </div>
 
                 {/* Right CTA */}

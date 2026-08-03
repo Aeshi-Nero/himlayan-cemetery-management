@@ -24,7 +24,7 @@ class SendInstallmentReminders extends Command
             ->with(['contract.client'])
             ->each(function (InstallmentSchedule $schedule) {
                 $staffUsers = User::where('is_active', true)
-                    ->whereIn('role', ['rcc', 'staff', 'super_admin'])
+                    ->whereIn('role', ['rcc', 'super_admin'])
                     ->get();
 
                 foreach ($staffUsers as $user) {

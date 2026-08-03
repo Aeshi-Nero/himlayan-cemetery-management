@@ -5,9 +5,11 @@
     "scripts": {
         "build": "vite build",
         "dev": "vite",
-        "typecheck": "tsc --noEmit"
+        "typecheck": "tsc --noEmit",
+        "lint": "eslint resources/js/Pages/Engineer/EngineerWorkspacePage.tsx resources/js/Pages/Public/MemorialMapPage.tsx resources/js/Pages/Admin/MapEditorPage.tsx resources/js/Pages/Public/LotDetailPage.tsx resources/js/constants/geo.ts --max-warnings 0"
     },
     "devDependencies": {
+        "@eslint/js": "^10.0.1",
         "@headlessui/react": "^2.2.10",
         "@inertiajs/react": "^2.3.27",
         "@tailwindcss/forms": "^0.5.11",
@@ -19,6 +21,8 @@
         "@vitejs/plugin-react": "^6.0.5",
         "autoprefixer": "^10.4.12",
         "concurrently": "^9.0.1",
+        "eslint": "^9.39.5",
+        "eslint-plugin-react-hooks": "^7.1.1",
         "laravel-vite-plugin": "^3.1.3",
         "leaflet": "^1.9.4",
         "lucide-react": "^0.546.0",
@@ -30,6 +34,10 @@
         "recharts": "^3.10.0",
         "tailwindcss": "^4.1.14",
         "typescript": "~5.8.2",
+        "typescript-eslint": "^8.65.0",
         "vite": "^8.2.0"
+    },
+    "dependencies": {
+        "react-is": "^19.2.8"
     }
 }

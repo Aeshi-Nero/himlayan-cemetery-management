@@ -56,7 +56,6 @@ class DatabaseSeeder extends Seeder
             ['usr-1', 'Super Admin User', 'admin@himlayan.gov.ph', 'super_admin'],
             ['usr-2', 'RCC Memorial Clerk', 'rcc@himlayan.gov.ph', 'rcc'],
             ['usr-3', 'Cemetery Engineer', 'engineer@himlayan.gov.ph', 'engineer'],
-            ['usr-4', 'Grounds Staff', 'staff@himlayan.gov.ph', 'staff'],
         ];
 
         foreach ($users as [$id, $name, $email, $role]) {

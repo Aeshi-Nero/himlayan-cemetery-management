@@ -15,6 +15,7 @@ class CemeteryMap extends Model
 
     protected $fillable = [
         'id',
+        'cemetery_id',
         'name',
         'description',
         'boundary_data',

@@ -1,4 +1,4 @@
-export type UserRole = 'super_admin' | 'rcc' | 'engineer' | 'staff';
+export type UserRole = 'super_admin' | 'rcc' | 'engineer';
 
 export type PlotStatus = 'available' | 'reserved' | 'occupied' | 'full';
 
@@ -105,6 +105,15 @@ export interface PathNode {
     lng: number;
     node_label?: string;
     is_accessible: boolean;
+}
+
+export interface PlotConnection {
+    id: string;
+    cemetery_id?: string;
+    from_plot_id: string;
+    to_plot_id: string;
+    from_plot?: Plot;
+    to_plot?: Plot;
 }
 
 export interface PathEdge {

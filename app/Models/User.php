@@ -27,13 +27,11 @@ class User extends Authenticatable
     public const ROLE_SUPER_ADMIN = 'super_admin';
     public const ROLE_RCC = 'rcc';
     public const ROLE_ENGINEER = 'engineer';
-    public const ROLE_STAFF = 'staff';
 
     public const ROLES = [
         self::ROLE_SUPER_ADMIN,
         self::ROLE_RCC,
         self::ROLE_ENGINEER,
-        self::ROLE_STAFF,
     ];
 
     /**
@@ -72,11 +70,6 @@ class User extends Authenticatable
     public function isEngineer(): bool
     {
         return $this->role === self::ROLE_ENGINEER;
-    }
-
-    public function isStaff(): bool
-    {
-        return $this->role === self::ROLE_STAFF;
     }
 
     public function activityLogs(): \Illuminate\Database\Eloquent\Relations\HasMany

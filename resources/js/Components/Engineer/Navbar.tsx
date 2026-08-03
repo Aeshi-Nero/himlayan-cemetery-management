@@ -5,7 +5,7 @@ import { ArrowRight, MapPin, Grid, LogIn, LogOut, Wrench, Home, Shield, User, Ma
 import type { AuthUser } from '@/types/inertia';
 
 import solanoLguSealImg from '@/assets/images/solano_lgu_seal_1784964597638.jpg';
-import himlayanLogoOfficialImg from '@/assets/images/himlayan_logo_official_1785166790688.jpg';
+import himlayanLogoOfficialImg from '@/assets/images/himlayan_ng_bayan_logo_2026.png';
 import engineerAvatarImg from '@/assets/images/untitled_design_1784969951289.jpg';
 
 interface NavbarProps {
@@ -169,7 +169,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             <img
               src={himlayanLogoOfficialImg}
               alt="Himlayan ng Bayan Logo"
-              className="h-9 sm:h-10 max-w-[180px] sm:max-w-[220px] object-contain mix-blend-multiply group-hover:opacity-90 transition-opacity"
+              className="h-9 sm:h-10 max-w-[180px] sm:max-w-[220px] object-contain group-hover:opacity-90 transition-opacity"
             />
           </div>
           {user?.role === 'engineer' && currentPath === '/engineer/workspace' && (

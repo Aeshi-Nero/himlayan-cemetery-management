@@ -67,7 +67,6 @@ export default function AuditPage() {
                 if (selectedAccount === 'rcc' && !l.user_email?.includes('rcc@')) return false;
                 if (selectedAccount === 'engineer' && !l.user_email?.includes('engineer@')) return false;
                 if (selectedAccount === 'admin' && !l.user_email?.includes('admin@')) return false;
-                if (selectedAccount === 'staff' && !l.user_email?.includes('staff@')) return false;
             }
 
             // Action filter

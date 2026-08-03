@@ -15,9 +15,11 @@ use App\Http\Controllers\Api\InquiryController;
 use App\Http\Controllers\Api\MapUsageController;
 use App\Http\Controllers\Api\PathfindingController;
 use App\Http\Controllers\Api\PaymentController;
+use App\Http\Controllers\Api\PlotConnectionController;
 use App\Http\Controllers\Api\PlotController;
 use App\Http\Controllers\Api\PreNeedPlanController;
 use App\Http\Controllers\Api\ReserveController;
+use App\Http\Controllers\Api\SettingsController;
 use App\Http\Controllers\Api\UserController;
 use App\Http\Controllers\Api\UserNotificationController;
 use App\Http\Controllers\ProfileController;
@@ -115,6 +117,7 @@ Route::prefix('api')->middleware('web')->group(function () {
     Route::get('pathfinding/nodes', [PathfindingController::class, 'nodes']);
     Route::get('pathfinding/edges', [PathfindingController::class, 'edges']);
     Route::get('pathfinding/find-path', [PathfindingController::class, 'findPath']);
+    Route::get('plot-connections', [PlotConnectionController::class, 'index']);
     Route::get('cemetery-map', [CemeteryMapController::class, 'show']);
     Route::get('stats/map-usage', [MapUsageController::class, 'show']);
     Route::post('stats/map-usage/increment', [MapUsageController::class, 'increment']);
@@ -131,8 +134,14 @@ Route::prefix('api')->middleware('web')->group(function () {
         Route::get('dashboard', [DashboardController::class, 'show']);
         Route::get('audit', [AuditController::class, 'index']);
 
-        Route::get('users', [UserController::class, 'index']);
-        Route::post('users', [UserController::class, 'store']);
+        Route::get('users', [UserController::class, 'index'])->middleware('role:super_admin');
+        Route::post('users', [UserController::class, 'store'])->middleware('role:super_admin');
+        Route::get('users/{user}', [UserController::class, 'show'])->middleware('role:super_admin');
+        Route::put('users/{user}', [UserController::class, 'update'])->middleware('role:super_admin');
+        Route::delete('users/{user}', [UserController::class, 'destroy'])->middleware('role:super_admin');
+
+        Route::get('settings', [SettingsController::class, 'index'])->middleware('role:super_admin');
+        Route::put('settings', [SettingsController::class, 'update'])->middleware('role:super_admin');
 
         Route::get('clients', [ClientController::class, 'index']);
         Route::post('clients', [ClientController::class, 'store']);
@@ -194,7 +203,10 @@ Route::prefix('api')->middleware('web')->group(function () {
         Route::put('plots/{plot}', [PlotController::class, 'update'])->where('plot', '[^/]+');
         Route::delete('plots/{plot}', [PlotController::class, 'destroy'])->where('plot', '[^/]+');
 
+        Route::post('plot-connections/sync', [PlotConnectionController::class, 'sync']);
+
         Route::post('cemetery-map', [CemeteryMapController::class, 'store']);
+        Route::delete('cemetery-map', [CemeteryMapController::class, 'destroy']);
     });
 });
 

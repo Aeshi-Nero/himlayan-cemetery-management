@@ -3,8 +3,15 @@ import { usePage } from '@inertiajs/react';
 import { MapContainer, TileLayer, Marker, Popup, Polyline, Polygon, useMap, ZoomControl } from 'react-leaflet';
 import L from 'leaflet';
 import { Navbar } from '@/Components/Public/Navbar';
-import { Plot, PathNode, PathStep, Burial } from '@/types';
+import { Plot, PathStep, Burial, PlotConnection } from '@/types';
 import { incrementMapUsageCount } from '@/utils/mapUsageTracker';
+import {
+  DEFAULT_CEMETERY_ID,
+  DEFAULT_MAP_CENTER,
+  FALLBACK_PLOT_LAT,
+  FALLBACK_PLOT_LNG,
+  DEFAULT_MAP_ZOOM,
+} from '@/constants/geo';
 import {
     MapPin,
     Navigation,
@@ -141,83 +148,219 @@ const ZoomListener = ({ onZoom }: { onZoom: (zoom: number) => void }) => {
     return null;
 };
 
-// Helper: sort border nodes to form a simple non-self-intersecting polygon loop using a Euclidean TSP tour with 2-opt uncrossing
-const sortBorderPlotsSequentially = (borderPlots: Plot[]): Plot[] => {
-    if (borderPlots.length <= 2) return borderPlots;
-
-    const getDist = (p1: Plot, p2: Plot) => {
-        const lat1 = p1.lat ?? 14.6720;
-        const lng1 = p1.lng ?? 121.0410;
-        const lat2 = p2.lat ?? 14.6720;
-        const lng2 = p2.lng ?? 121.0410;
-        const dLat = lat2 - lat1;
-        const dLng = lng2 - lng1;
-        return dLat * dLat + dLng * dLng;
+// Build an undirected adjacency map from persisted cemetery connections.
+const buildConnectionAdjacency = (connections: PlotConnection[]) => {
+    const adj = new Map<string, string[]>();
+    const add = (a: string, b: string) => {
+        if (!adj.has(a)) adj.set(a, []);
+        adj.get(a)!.push(b);
     };
+    connections.forEach((c) => {
+        add(c.from_plot_id, c.to_plot_id);
+        add(c.to_plot_id, c.from_plot_id);
+    });
+    return adj;
+};
 
-    const n = borderPlots.length;
-
-    // Build an initial tour using Nearest Neighbor heuristic starting at index 0
-    let tour: number[] = [0];
-    const visited = new Set<number>([0]);
-
-    while (tour.length < n) {
-        const currentIdx = tour[tour.length - 1];
-        let bestNext = -1;
-        let minDist = Infinity;
-
-        for (let i = 0; i < n; i++) {
-            if (!visited.has(i)) {
-                const d = getDist(borderPlots[currentIdx], borderPlots[i]);
-                if (d < minDist) {
-                    minDist = d;
-                    bestNext = i;
+// BFS over the cemetery connection graph returning an ordered array of plot ids from start to end.
+const bfsPlotRoute = (
+    startId: string,
+    endId: string,
+    adj: Map<string, string[]>,
+): string[] | null => {
+    if (startId === endId) return [startId];
+    const queue: string[] = [startId];
+    const prev = new Map<string, string>([[startId, startId]]);
+    const seen = new Set<string>([startId]);
+    while (queue.length > 0) {
+        const cur = queue.shift()!;
+        const neighbors = adj.get(cur) || [];
+        for (const n of neighbors) {
+            if (seen.has(n)) continue;
+            seen.add(n);
+            prev.set(n, cur);
+            if (n === endId) {
+                const route: string[] = [];
+                let node: string | undefined = endId;
+                while (node && node !== startId) {
+                    route.unshift(node);
+                    node = prev.get(node);
                 }
+                route.unshift(startId);
+                return route;
             }
+            queue.push(n);
         }
+    }
+    return null;
+};
 
-        if (bestNext !== -1) {
-            tour.push(bestNext);
-            visited.add(bestNext);
+// The starting landmark for a cemetery = its entrance plot, else the first path plot, else null.
+const findEntrancePlot = (plots: Plot[]): Plot | null => {
+    const entrance = plots.find((p) => p.lot_type === 'entrance');
+    if (entrance) return entrance;
+    const path = plots.find((p) => p.lot_type === 'path');
+    return path || null;
+};
+
+// Build turn-by-turn walking steps across the cemetery's own connection network,
+// ending with a short walk from the last connected node onto the target plot.
+const buildCemeteryPathSteps = (
+    target: Plot,
+    plots: Plot[],
+    conns: PlotConnection[],
+    startPlot?: Plot | null,
+): { steps: PathStep[]; totalDistance: number } => {
+    const lat = target.lat || FALLBACK_PLOT_LAT;
+    const lng = target.lng || FALLBACK_PLOT_LNG;
+
+    const gate = startPlot || findEntrancePlot(plots);
+    const gateId = gate?.id;
+    if (!gateId || gateId === target.id) {
+        return {
+            steps: [
+                {
+                    nodeId: `walk-to-${target.id}`,
+                    lat,
+                    lng,
+                    label: `Walk directly to Lot #${target.plot_number}`,
+                    distanceFromPrevious: 0,
+                },
+            ],
+            totalDistance: 0,
+        };
+    }
+
+    const adj = buildConnectionAdjacency(conns);
+    const route = bfsPlotRoute(gateId, target.id, adj);
+
+    // Fall back to a direct leg (from gate to target) when there is no usable connection graph.
+    if (!route || route.length < 2) {
+        const gateLat = gate.lat || lat;
+        const gateLng = gate.lng || lng;
+        const dist = calculateHaversineDistance(gateLat, gateLng, lat, lng);
+        return {
+            steps: [
+                {
+                    nodeId: `from-gate-${gateId}`,
+                    lat: gateLat,
+                    lng: gateLng,
+                    label: `Start at ${gate.plot_number} (${gate.lot_type})`,
+                    distanceFromPrevious: 0,
+                },
+                {
+                    nodeId: `walk-to-${target.id}`,
+                    lat,
+                    lng,
+                    label: `Walk directly to Lot #${target.plot_number}`,
+                    distanceFromPrevious: dist,
+                },
+            ],
+            totalDistance: dist,
+        };
+    }
+
+    const plotById = new Map(plots.map((p) => [p.id, p]));
+    let distance = 0;
+    const steps: PathStep[] = [];
+    for (let i = 0; i < route.length; i++) {
+        const nodeId = route[i];
+        const plot = plotById.get(nodeId);
+        if (!plot) continue;
+        const pLat = plot.lat || lat;
+        const pLng = plot.lng || lng;
+        if (i === 0) {
+            steps.push({
+                nodeId,
+                lat: pLat,
+                lng: pLng,
+                label: `Start at ${plot.plot_number} (${plot.lot_type})`,
+                distanceFromPrevious: 0,
+            });
+            continue;
+        }
+        const prevPlot = plotById.get(route[i - 1]);
+        const d = prevPlot
+            ? calculateHaversineDistance(prevPlot.lat || pLat, prevPlot.lng || pLng, pLat, pLng)
+            : 0;
+        distance += d;
+        steps.push({
+            nodeId,
+            lat: pLat,
+            lng: pLng,
+            label: `Along connection from ${prevPlot?.plot_number || '?'} to ${plot.plot_number}`,
+            distanceFromPrevious: d,
+        });
+    }
+
+    // Final short leg onto the target plot.
+    const lastPlot = plotById.get(route[route.length - 1]);
+    if (lastPlot && (lastPlot.lat !== lat || lastPlot.lng !== lng)) {
+        const finalDist = calculateHaversineDistance(lastPlot.lat || lat, lastPlot.lng || lng, lat, lng);
+        if (finalDist > 1) {
+            distance += finalDist;
+            steps.push({
+                nodeId: `walk-to-${target.id}`,
+                lat,
+                lng,
+                label: `Walk onto Lot #${target.plot_number}`,
+                distanceFromPrevious: finalDist,
+            });
+        }
+    }
+
+    return { steps, totalDistance: distance };
+};
+
+// Helper: order plots by their persisted connection chain (placement order), falling back to plot_number ordering
+const orderPlotsByConnectionChain = (plots: Plot[], connections: PlotConnection[]): Plot[] => {
+    const plotById = new Map(plots.map((p) => [p.id, p]));
+    const connSet = new Set<string>();
+    connections.forEach((c) => {
+        connSet.add(`${c.from_plot_id}__${c.to_plot_id}`);
+        connSet.add(`${c.to_plot_id}__${c.from_plot_id}`);
+    });
+
+    if (plots.length <= 2) return plots;
+
+    const ordered: Plot[] = [];
+    const visited = new Set<string>();
+    let start = plots[0];
+    ordered.push(start);
+    visited.add(start.id);
+
+    for (let guard = 0; guard < plots.length * 2 && ordered.length < plots.length; guard++) {
+        const curr = ordered[ordered.length - 1];
+        const next = plots.find(
+            (p) => !visited.has(p.id) && connSet.has(`${curr.id}__${p.id}`),
+        );
+        if (next) {
+            ordered.push(next);
+            visited.add(next.id);
+            continue;
+        }
+        // Dead-end: pick the next unvisited plot by sequential plot number
+        const fallback = plots
+            .filter((p) => !visited.has(p.id))
+            .sort((a, b) => {
+                const na = parseInt(a.plot_number.split('-')[1] || '0', 10);
+                const nb = parseInt(b.plot_number.split('-')[1] || '0', 10);
+                return na - nb;
+            })[0];
+        if (fallback) {
+            ordered.push(fallback);
+            visited.add(fallback.id);
         } else {
             break;
         }
     }
 
-    // Refine the tour using iterative 2-opt swaps to eliminate any self-intersecting crossings
-    let improved = true;
-    let iterations = 0;
-    const maxIterations = 200;
+    // Append any remaining (should not happen)
+    plots.forEach((p) => {
+        if (!visited.has(p.id)) ordered.push(p);
+    });
 
-    while (improved && iterations < maxIterations) {
-        improved = false;
-        iterations++;
-
-        for (let i = 0; i < n - 1; i++) {
-            for (let j = i + 2; j < n; j++) {
-                const nextJ = (j + 1) % n;
-                if (nextJ === i) continue;
-
-                const currentDist =
-                    Math.sqrt(getDist(borderPlots[tour[i]], borderPlots[tour[i + 1]])) +
-                    Math.sqrt(getDist(borderPlots[tour[j]], borderPlots[tour[nextJ]]));
-
-                const newDist =
-                    Math.sqrt(getDist(borderPlots[tour[i]], borderPlots[tour[j]])) +
-                    Math.sqrt(getDist(borderPlots[tour[i + 1]], borderPlots[tour[nextJ]]));
-
-                if (newDist < currentDist - 1e-9) {
-                    // Perform 2-opt swap: reverse the tour segment from i+1 to j
-                    const segment = tour.slice(i + 1, j + 1);
-                    segment.reverse();
-                    tour.splice(i + 1, j - i, ...segment);
-                    improved = true;
-                }
-            }
-        }
-    }
-
-    return tour.map((idx) => borderPlots[idx]);
+    return ordered;
 };
 
 // Helper: parse deceased occupant names array from plot object or notes
@@ -257,8 +400,8 @@ export const MemorialMapPage: React.FC = () => {
     const searchParams = useMemo(() => new URL(url, window.location.origin).searchParams, [url]);
 
     const [plots, setPlots] = useState<Plot[]>([]);
-    const [nodes, setNodes] = useState<PathNode[]>([]);
     const [burials, setBurials] = useState<Burial[]>([]);
+    const [connections, setConnections] = useState<PlotConnection[]>([]);
     const [selectedPlot, setSelectedPlot] = useState<Plot | null>(null);
     const [zoomLevel, setZoomLevel] = useState(16);
     const [isLegendOpen, setIsLegendOpen] = useState(true);
@@ -268,13 +411,6 @@ export const MemorialMapPage: React.FC = () => {
     const [flyToCenter, setFlyToCenter] = useState<[number, number] | null>(null);
     const [flyToZoom, setFlyToZoom] = useState<number>(19);
 
-    // Pathfinding State
-    const [fromNodeId, setFromNodeId] = useState('node-gate-1');
-    const [toNodeId, setToNodeId] = useState('');
-    const [pathSteps, setPathSteps] = useState<PathStep[]>([]);
-    const [totalDistance, setTotalDistance] = useState<number | null>(null);
-    const [loadingPath, setLoadingPath] = useState(false);
-
     // Search Loved One state
     const [mapSearchQuery, setMapSearchQuery] = useState('');
     const [selectedDeceasedName, setSelectedDeceasedName] = useState<string | null>(null);
@@ -282,41 +418,34 @@ export const MemorialMapPage: React.FC = () => {
     const [isDropdownOpen, setIsDropdownOpen] = useState(false);
     const dropdownRef = useRef<HTMLDivElement>(null);
 
-    // Extended path to connect from the nearest path node (on the road) directly to the selected plot's coordinates
-    const extendedPathSteps = useMemo(() => {
-        if (!selectedPlot || pathSteps.length === 0) return pathSteps;
+    // Resolve cemetery boundary: the group of plots sharing the target's cemetery_id (or all plots).
+    const cemeteryPlots = useMemo(() => {
+        if (!selectedPlot) return plots;
+        return selectedPlot.cemetery_id
+            ? plots.filter((p) => p.cemetery_id === selectedPlot.cemetery_id)
+            : plots;
+    }, [plots, selectedPlot]);
 
-        const lastStep = pathSteps[pathSteps.length - 1];
-        const targetNodeId = selectedPlot.nearest_path_node_id || 'node-1';
+    // Resolve only the connections belonging to the selected plot's cemetery.
+    const cemeteryConnections = useMemo(() => {
+        if (!selectedPlot) return connections;
+        return selectedPlot.cemetery_id
+            ? connections.filter((c) => c.cemetery_id === selectedPlot.cemetery_id)
+            : connections;
+    }, [connections, selectedPlot]);
 
-        if (lastStep.nodeId === targetNodeId) {
-            const pLat = selectedPlot.lat || 14.6720;
-            const pLng = selectedPlot.lng || 121.0410;
+    // Current walking route from the entrance to the selected plot.
+    const cemeteryPath = useMemo(() => {
+        if (!selectedPlot) return { steps: [], totalDistance: 0 };
+        return buildCemeteryPathSteps(selectedPlot, cemeteryPlots, cemeteryConnections);
+    }, [selectedPlot, cemeteryPlots, cemeteryConnections]);
 
-            const extraDist = calculateHaversineDistance(lastStep.lat, lastStep.lng, pLat, pLng);
+    const pathSteps = cemeteryPath.steps;
+    const totalDistance = cemeteryPath.totalDistance;
 
-            if (extraDist > 1) {
-                return [
-                    ...pathSteps,
-                    {
-                        nodeId: `plot-connect-${selectedPlot.id}`,
-                        lat: pLat,
-                        lng: pLng,
-                        label: `Walk directly to Lot #${selectedPlot.plot_number} (${
-                            selectedDeceasedName || selectedPlot.deceased_name || 'Resting Place'
-                        })`,
-                        distanceFromPrevious: extraDist,
-                    },
-                ];
-            }
-        }
-        return pathSteps;
-    }, [pathSteps, selectedPlot]);
-
-    const extendedTotalDistance = useMemo(() => {
-        if (extendedPathSteps === pathSteps) return totalDistance;
-        return extendedPathSteps.reduce((acc, step) => acc + step.distanceFromPrevious, 0);
-    }, [extendedPathSteps, pathSteps, totalDistance]);
+    // Walking path steps already include routing to the target plot via the cemetery connection network.
+    const extendedPathSteps = pathSteps;
+    const extendedTotalDistance = totalDistance;
 
     // Close dropdown on click outside
     useEffect(() => {
@@ -430,14 +559,10 @@ export const MemorialMapPage: React.FC = () => {
         } else {
             setSelectedDeceasedName(null);
         }
-        const pLat = suggestion.plot.lat || 14.6720;
-        const pLng = suggestion.plot.lng || 121.0410;
+        const pLat = suggestion.plot.lat || FALLBACK_PLOT_LAT;
+        const pLng = suggestion.plot.lng || FALLBACK_PLOT_LNG;
         setFlyToCenter([pLat, pLng]);
         setFlyToZoom(20);
-
-        const targetNode = suggestion.plot.nearest_path_node_id || 'node-1';
-        setToNodeId(targetNode);
-        calculatePath(fromNodeId, targetNode);
 
         setSearchFeedback(
             `📍 Selected ${suggestion.name} at Lot #${suggestion.plot.plot_number} (Section ${suggestion.plot.section})! Map zoomed to grave box & walking path calculated.`,
@@ -455,116 +580,156 @@ export const MemorialMapPage: React.FC = () => {
         return burials.find((b) => b.plot_id === selectedPlot.id);
     }, [selectedPlot, burials]);
 
-    const showSidebar = Boolean(selectedPlot || toNodeId);
+    const showSidebar = Boolean(selectedPlot);
 
     const handleClearSelection = () => {
         setSelectedPlot(null);
         setSelectedDeceasedName(null);
-        setToNodeId('');
-        setPathSteps([]);
-        setTotalDistance(null);
         setSearchFeedback(null);
         setMapSearchQuery('');
     };
 
-    const handleDownloadOfflinePass = () => {
+    const handleDownloadOfflineMap = () => {
+        if (!selectedPlot) return;
+
         const deceasedName =
             selectedDeceasedName ||
             selectedBurial?.deceased_name ||
             selectedPlot?.deceased_name ||
             selectedPlot?.inquirer_name ||
-            (selectedPlot ? `Lot #${selectedPlot.plot_number}` : 'Memorial Lot');
+            `Lot #${selectedPlot.plot_number}`;
 
-        const dobStr = selectedBurial?.date_of_birth
-            ? new Date(selectedBurial.date_of_birth).toLocaleDateString('en-US', {
-                  month: 'long',
-                  day: 'numeric',
-                  year: 'numeric',
-              })
-            : 'May 12, 1945';
+        // Border polygon (placement-order chain)
+        const borderPlots = cemeteryPlots.filter((p) => p.lot_type === 'border');
+        const borderCoords = orderPlotsByConnectionChain(borderPlots, cemeteryConnections).map((p) => [
+            p.lat || selectedPlot.lat || FALLBACK_PLOT_LAT,
+            p.lng || selectedPlot.lng || FALLBACK_PLOT_LNG,
+        ]);
 
-        const dodStr = selectedBurial?.date_of_death
-            ? new Date(selectedBurial.date_of_death).toLocaleDateString('en-US', {
-                  month: 'long',
-                  day: 'numeric',
-                  year: 'numeric',
-              })
-            : selectedPlot?.burial_date
-              ? new Date(selectedPlot.burial_date).toLocaleDateString('en-US', {
-                    month: 'long',
-                    day: 'numeric',
-                    year: 'numeric',
-                })
-              : 'October 24, 2021';
+        // Entrance node
+        const entrance = findEntrancePlot(cemeteryPlots);
 
-        const stepsList =
-            extendedPathSteps.length > 0
-                ? extendedPathSteps
-                      .map(
-                          (step, i) =>
-                              `<li style="margin-bottom: 6px;"><strong>Step ${i + 1}:</strong> ${step.label} (${step.distanceFromPrevious} meters)</li>`,
-                      )
-                      .join('')
-                : '<li>Head directly to destination plot using park walkway signage.</li>';
+        // Walking path to the deceased box (from the computed route)
+        const pathCoords = extendedPathSteps
+            .map((s) => [s.lat, s.lng] as [number, number]);
 
-        const qrImageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(
-            window.location.origin + '/map?search=' + encodeURIComponent(deceasedName),
-        )}&color=064e3b`;
+        const targetCoords: [number, number] = [
+            selectedPlot.lat || FALLBACK_PLOT_LAT,
+            selectedPlot.lng || FALLBACK_PLOT_LNG,
+        ];
+
+        const safeName = (name: string) =>
+            name.replace(/[<>&"']/g, (ch) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&#39;' }[ch] as string));
+
+        const escJs = (val: unknown) =>
+            JSON.stringify(val).replace(/</g, '\\u003c').replace(/>/g, '\\u003e').replace(/&/g, '\\u0026');
+
+        const borderJson = escJs(borderCoords);
+        const pathJson = escJs(pathCoords);
+        const targetJson = escJs([targetCoords[0], targetCoords[1]]);
+        const entranceJson = entrance
+            ? escJs([entrance.lat || targetCoords[0], entrance.lng || targetCoords[1]])
+            : 'null';
+        const nameJson = escJs(deceasedName);
+        const targetNumberJson = escJs(`Lot #${selectedPlot.plot_number}`);
+        const sectionJson = escJs(`Section ${selectedPlot.section}`);
+        const targetColor =
+            selectedPlot.status === 'available' ? '#00c853' : selectedPlot.status === 'reserved' ? '#f59e0b' : '#ff1744';
+        const colorJson = escJs(targetColor);
 
         const htmlContent = `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Himlayan Memorial Park - Offline Locator Pass</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Himlayan Memorial Park - Offline Map</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"><\/script>
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #f8fafc; color: #0f172a; padding: 24px; margin: 0; }
-    .card { max-width: 580px; margin: 0 auto; background: #ffffff; border: 2px solid #047857; border-radius: 20px; padding: 28px; box-shadow: 0 10px 30px rgba(0,0,0,0.1); }
-    .header { text-align: center; border-bottom: 2px dashed #e2e8f0; padding-bottom: 16px; margin-bottom: 20px; }
-    .header h1 { font-size: 22px; color: #064e3b; margin: 0 0 4px 0; letter-spacing: 0.5px; font-weight: 800; }
-    .header p { font-size: 11px; color: #047857; text-transform: uppercase; font-weight: bold; margin: 0; letter-spacing: 1.5px; }
-    .deceased-card { background: linear-gradient(135deg, #064e3b 0%, #047857 100%); color: #ffffff; border-radius: 16px; padding: 20px; text-align: center; margin-bottom: 20px; box-shadow: 0 4px 12px rgba(4,120,87,0.25); }
-    .deceased-name { font-size: 24px; font-weight: 800; margin-bottom: 6px; letter-spacing: 0.2px; }
-    .dates { font-size: 13px; color: #d1fae5; font-weight: 600; display: flex; align-items: center; justify-content: center; gap: 12px; }
-    .location-box { background: #f0fdf4; border: 1.5px solid #a7f3d0; color: #064e3b; border-radius: 12px; padding: 12px 16px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; font-weight: 700; font-size: 13px; }
-    .qr-section { text-align: center; margin: 20px 0; padding: 20px; background: #f8fafc; border-radius: 16px; border: 1px solid #e2e8f0; }
-    .qr-section img { width: 170px; height: 170px; border-radius: 12px; border: 1px solid #cbd5e1; background: #ffffff; padding: 8px; }
-    .qr-section p { font-size: 11px; color: #64748b; margin-top: 10px; font-weight: 600; }
-    .path-section { margin-top: 20px; }
-    .path-section h3 { font-size: 13px; color: #064e3b; text-transform: uppercase; letter-spacing: 0.8px; border-bottom: 1px solid #e2e8f0; padding-bottom: 6px; margin-bottom: 12px; font-weight: 800; }
-    ul { padding-left: 20px; font-size: 13px; color: #334155; line-height: 1.6; margin: 0; }
-    .footer { text-align: center; margin-top: 24px; font-size: 11px; color: #94a3b8; border-top: 1px solid #f1f5f9; padding-top: 12px; }
+    html, body, #map { height: 100%; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+    #map { z-index: 1; }
+    .header { position: absolute; top: 12px; left: 12px; right: 12px; z-index: 1000; background: rgba(6,78,59,0.95); color: #fff; border-radius: 14px; padding: 12px 16px; box-shadow: 0 6px 18px rgba(0,0,0,0.25); pointer-events: none; }
+    .header h1 { margin: 0; font-size: 15px; letter-spacing: 0.3px; }
+    .header p { margin: 3px 0 0; font-size: 11px; color: #a7f3d0; }
+    .legend { position: absolute; bottom: 18px; left: 12px; z-index: 1000; background: rgba(255,255,255,0.95); border: 1px solid #e2e8f0; border-radius: 12px; padding: 10px 14px; font-size: 11px; color: #0f172a; box-shadow: 0 4px 14px rgba(0,0,0,0.12); }
+    .legend div { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+    .dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
+    .swatch { width: 12px; height: 12px; border-radius: 2px; display: inline-block; }
   </style>
 </head>
 <body>
-  <div class="card">
-    <div class="header">
-      <h1>HIMLAYAN MEMORIAL PARK</h1>
-      <p>Offline Pathfinding & Memorial Pass</p>
-    </div>
-    <div class="deceased-card">
-      <div class="deceased-name">🌹 ${deceasedName}</div>
-      <div class="dates">
-        <span>Born: ${dobStr}</span>
-        <span>•</span>
-        <span>Died: ${dodStr}</span>
-      </div>
-    </div>
-    <div class="location-box">
-      <span>Section ${selectedPlot?.section || 'A'} • Lot #${selectedPlot?.plot_number || 'A-01'}</span>
-      <span>${extendedTotalDistance ? `${extendedTotalDistance}m Walking Distance` : 'Himlayan Memorial Park'}</span>
-    </div>
-    <div class="qr-section">
-      <img src="${qrImageUrl}" alt="Offline Pass QR Code" />
-      <p>Scan with camera to view interactive GPS map pass</p>
-    </div>
-    <div class="path-section">
-      <h3>Turn-by-Turn Pathfinding Directions</h3>
-      <ul>${stepsList}</ul>
-    </div>
-    <div class="footer">
-      Generated on ${new Date().toLocaleString()} • Himlayan Memorial Park Navigator
-    </div>
+  <div class="header">
+    <h1>🏛️ Himlayan Memorial Park — Offline Map</h1>
+    <p>${safeName(deceasedName)} • ${safeName(selectedPlot.section ? `Section ${selectedPlot.section}` : '')} • ${safeName(`Lot #${selectedPlot.plot_number}`)}</p>
   </div>
+  <div id="map"></div>
+  <div class="legend">
+    <div><span class="swatch" style="background:${safeName(targetColor)}; border:1px solid #fff;"></span> <strong>${safeName(deceasedName)}</strong> Grave Box</div>
+    ${entrance ? '<div><span class="dot" style="background:#0d9488; border:2px solid #f59e0b;"></span> Entrance</div>' : ''}
+    ${borderCoords.length >= 3 ? '<div><span class="swatch" style="background:#14b8a6;"></span> Cemetery Border</div>' : ''}
+    ${pathCoords.length >= 2 ? '<div><span style="width:16px; height:4px; background:#059669; border-radius:2px; display:inline-block;"></span> Walking Path</div>' : ''}
+  </div>
+  <script>
+    (function () {
+      var border = ${borderJson};
+      var path = ${pathJson};
+      var target = ${targetJson};
+      var entrance = ${entranceJson};
+      var name = ${nameJson};
+      var lotNumber = ${targetNumberJson};
+      var section = ${sectionJson};
+      var color = ${colorJson};
+
+      var points = [];
+      if (target) points.push(L.latLng(target[0], target[1]));
+      if (entrance) points.push(L.latLng(entrance[0], entrance[1]));
+      if (border.length >= 3) border.forEach(function (c) { points.push(L.latLng(c[0], c[1])); });
+      if (path.length >= 2) path.forEach(function (c) { points.push(L.latLng(c[0], c[1])); });
+
+      var map = L.map('map');
+      if (points.length > 0) {
+        map.fitBounds(L.latLngBounds(points).pad(0.15));
+      } else {
+        map.setView(DEFAULT_MAP_CENTER, DEFAULT_MAP_ZOOM);
+      }
+
+      L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+        maxZoom: 24,
+        maxNativeZoom: 20
+      }).addTo(map);
+
+      if (border.length >= 3) {
+        L.polygon(border, { color: '#0d9488', weight: 3, fillColor: '#14b8a6', fillOpacity: 0.12, dashArray: '6, 6' }).addTo(map);
+      }
+
+      if (entrance) {
+        var entranceIcon = L.divIcon({
+          className: '',
+          html: '<div style="background-color:#0d9488; border-radius:50%; border:2.5px solid #f59e0b; box-shadow:0 0 10px #f59e0b, 0 0 5px #0d9488; width:22px; height:22px; display:flex; align-items:center; justify-content:center;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 20V6a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v14"/><path d="M2 20h20"/><path d="M14 12v.01"/></svg></div>',
+          iconSize: [22, 22],
+          iconAnchor: [11, 11]
+        });
+        L.marker(entrance, { icon: entranceIcon }).addTo(map).bindPopup('<strong>Entrance</strong><br/>Start your walk here.');
+      }
+
+      if (path.length >= 2) {
+        L.polyline(path, { color: '#059669', weight: 6, opacity: 0.95, dashArray: '8, 8' }).addTo(map);
+      }
+
+      if (target) {
+        var boxIcon = L.divIcon({
+          className: '',
+          html: '<div style="background-color:' + color + '; border:2px solid #ffffff; border-radius:3px; width:26px; height:34px; box-shadow:0 0 12px ' + color + ';"></div>',
+          iconSize: [26, 34],
+          iconAnchor: [13, 17]
+        });
+        var m = L.marker(target, { icon: boxIcon, zIndexOffset: 1000 }).addTo(map);
+        m.bindPopup('<strong>' + name + '</strong><br/>' + section + '<br/>' + lotNumber);
+        m.openPopup();
+      }
+    })();
+  <\/script>
 </body>
 </html>`;
 
@@ -572,7 +737,7 @@ export const MemorialMapPage: React.FC = () => {
         const fileUrl = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = fileUrl;
-        a.download = `Himlayan_Pass_${deceasedName.replace(/[^a-zA-Z0-9]/g, '_')}.html`;
+        a.download = `Himlayan_Offline_Map_${deceasedName.replace(/[^a-zA-Z0-9]/g, '_')}.html`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
@@ -585,31 +750,27 @@ export const MemorialMapPage: React.FC = () => {
 
         const fetchData = async () => {
             try {
-                const [plotsRes, nodesRes, burialsRes] = await Promise.all([
+                const [plotsRes, burialsRes, connRes] = await Promise.all([
                     window.axios.get('/api/plots', { params: { limit: 10000 } }),
-                    window.axios.get('/api/pathfinding/nodes'),
                     window.axios.get('/api/burials').catch(() => ({ data: { success: false, data: [] } })),
+                    window.axios.get('/api/plot-connections').catch(() => ({ data: { success: false, data: [] } })),
                 ]);
 
                 const loadedPlots: Plot[] = plotsRes.data?.success ? plotsRes.data.data : [];
-                const loadedNodes: PathNode[] = nodesRes.data?.success ? nodesRes.data.data : [];
                 const loadedBurials: Burial[] = burialsRes.data?.success ? burialsRes.data.data : [];
+                const loadedConnections: PlotConnection[] = connRes.data?.success ? connRes.data.data : [];
 
                 setPlots(loadedPlots);
-                setNodes(loadedNodes);
                 setBurials(loadedBurials);
+                setConnections(loadedConnections);
 
-                // Check if query params specify search or destination node
+                // Check if query params specify search
                 const searchQueryParam =
                     searchParams.get('search') || searchParams.get('q') || searchParams.get('query');
-                const toNodeQuery = searchParams.get('toNode');
 
                 if (searchQueryParam) {
                     setMapSearchQuery(searchQueryParam);
                     executeDeceasedSearch(searchQueryParam, loadedPlots, loadedBurials);
-                } else if (toNodeQuery) {
-                    setToNodeId(toNodeQuery);
-                    calculatePath('node-gate-1', toNodeQuery);
                 }
             } catch (err) {
                 console.error('Error loading map data:', err);
@@ -627,25 +788,6 @@ export const MemorialMapPage: React.FC = () => {
             window.removeEventListener('storage', handleRemoteUpdate);
         };
     }, [searchParams]);
-
-    const calculatePath = async (startId: string, endId: string) => {
-        if (!startId || !endId) return;
-        setLoadingPath(true);
-        incrementMapUsageCount();
-        try {
-            const res = await window.axios.get('/api/pathfinding/find-path', {
-                params: { from: startId, to: endId },
-            });
-            if (res.data?.success) {
-                setPathSteps(res.data.data.path);
-                setTotalDistance(res.data.data.totalDistance);
-            }
-        } catch (err) {
-            console.error('Error running A* pathfinding:', err);
-        } finally {
-            setLoadingPath(false);
-        }
-    };
 
     const executeDeceasedSearch = async (
         queryText: string,
@@ -705,16 +847,12 @@ export const MemorialMapPage: React.FC = () => {
                 setSelectedDeceasedName(null);
             }
             setIsSidebarCollapsed(false);
-            const pLat = matchedPlot.lat || 14.6720;
-            const pLng = matchedPlot.lng || 121.0410;
+            const pLat = matchedPlot.lat || FALLBACK_PLOT_LAT;
+            const pLng = matchedPlot.lng || FALLBACK_PLOT_LNG;
 
             // Pan & Zoom directly to the exact grave coordinates with high detail zoom
             setFlyToCenter([pLat, pLng]);
             setFlyToZoom(20);
-
-            const targetNode = matchedPlot.nearest_path_node_id || 'node-1';
-            setToNodeId(targetNode);
-            calculatePath(fromNodeId, targetNode);
 
             const nameDisplay = deceasedInfo ? `${deceasedInfo} ` : '';
             setSearchFeedback(
@@ -734,9 +872,20 @@ export const MemorialMapPage: React.FC = () => {
         executeDeceasedSearch(mapSearchQuery);
     };
 
+    // Auto-download the offline map when the page is opened via the QR code (?download=1)
+    const autoDownloadedRef = useRef(false);
+    useEffect(() => {
+        if (searchParams.get('download') !== '1') return;
+        if (!selectedPlot) return;
+        if (autoDownloadedRef.current) return;
+        autoDownloadedRef.current = true;
+        const t = setTimeout(() => handleDownloadOfflineMap(), 600);
+        return () => clearTimeout(t);
+    }, [searchParams, selectedPlot]);
+
     const polylinePositions: [number, number][] = extendedPathSteps.map((step) => [step.lat, step.lng]);
 
-    const defaultCenter: [number, number] = [14.671, 121.0415];
+    const defaultCenter: [number, number] = DEFAULT_MAP_CENTER;
 
     return (
         <div className="min-h-screen bg-slate-50 text-slate-900 font-body pt-20 flex flex-col h-screen overflow-hidden">
@@ -836,7 +985,7 @@ export const MemorialMapPage: React.FC = () => {
 
                         <TileLayer
                             attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
-                            url="https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png"
+                            url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
                             maxZoom={24}
                             maxNativeZoom={20}
                         />
@@ -846,7 +995,7 @@ export const MemorialMapPage: React.FC = () => {
                             const borderPlots = plots.filter((p) => p.lot_type === 'border');
                             const groupedBorders: { [key: string]: Plot[] } = {};
                             borderPlots.forEach((p) => {
-                                const cid = p.cemetery_id || 'default-himlayan';
+                                const cid = p.cemetery_id || DEFAULT_CEMETERY_ID;
                                 if (!groupedBorders[cid]) {
                                     groupedBorders[cid] = [];
                                 }
@@ -855,9 +1004,9 @@ export const MemorialMapPage: React.FC = () => {
 
                             return Object.entries(groupedBorders).map(([cid, group]) => {
                                 if (group.length >= 3) {
-                                    const sorted = sortBorderPlotsSequentially(group);
+                                    const sorted = orderPlotsByConnectionChain(group, connections);
                                     const coords = sorted.map(
-                                        (p) => [p.lat || 14.6720, p.lng || 121.0410] as [number, number],
+                                        (p) => [p.lat || FALLBACK_PLOT_LAT, p.lng || FALLBACK_PLOT_LNG] as [number, number],
                                     );
                                     return (
                                         <Polygon
@@ -877,21 +1026,55 @@ export const MemorialMapPage: React.FC = () => {
                             });
                         })()}
 
-                        {/* Connected Path Nodes Line (grouped by cemetery_id to avoid crossover lines) */}
+                        {/* Connected Path Nodes Line (persisted connections, grouped by cemetery_id) */}
                         {(() => {
-                            const pathPlots = plots.filter((p) => p.lot_type === 'path' || p.lot_type === 'entrance');
-                            const groupedPaths: { [key: string]: Plot[] } = {};
-                            pathPlots.forEach((p) => {
-                                const cid = p.cemetery_id || 'default-himlayan';
-                                if (!groupedPaths[cid]) {
-                                    groupedPaths[cid] = [];
+                            const groupedConns: { [key: string]: PlotConnection[] } = {};
+                            connections.forEach((conn) => {
+                                const cid = conn.cemetery_id || DEFAULT_CEMETERY_ID;
+                                if (!groupedConns[cid]) {
+                                    groupedConns[cid] = [];
                                 }
-                                groupedPaths[cid].push(p);
+                                groupedConns[cid].push(conn);
                             });
 
-                            return Object.entries(groupedPaths).map(([cid, group]) => {
-                                if (group.length > 1) {
-                                    const sorted = [...group].sort((a, b) => {
+                            return Object.entries(groupedConns).map(([cid, group]) => {
+                                const lines = group
+                                    .map((conn) => {
+                                        const fromPlot = plots.find((p) => p.id === conn.from_plot_id);
+                                        const toPlot = plots.find((p) => p.id === conn.to_plot_id);
+                                        if (!fromPlot || !toPlot) return null;
+                                        if (fromPlot.lot_type === 'border' && toPlot.lot_type === 'border') return null;
+                                        return (
+                                            <Polyline
+                                                key={`conn-line-${conn.id}`}
+                                                positions={[
+                                                    [fromPlot.lat || FALLBACK_PLOT_LAT, fromPlot.lng || FALLBACK_PLOT_LNG] as [number, number],
+                                                    [toPlot.lat || FALLBACK_PLOT_LAT, toPlot.lng || FALLBACK_PLOT_LNG] as [number, number],
+                                                ]}
+                                                pathOptions={{
+                                                    color: '#14b8a6',
+                                                    weight: 3.5,
+                                                    dashArray: '6, 6',
+                                                    lineCap: 'round',
+                                                    lineJoin: 'round',
+                                                }}
+                                            />
+                                        );
+                                    })
+                                    .filter(Boolean);
+
+                                if (lines.length === 0) {
+                                    // Fallback for legacy data without persisted connections: connect path/entrance nodes
+                                    const pathPlots = plots.filter(
+                                        (p) =>
+                                            p.lot_type === 'path' ||
+                                            p.lot_type === 'entrance',
+                                    );
+                                    const groupPlots = pathPlots.filter(
+                                        (p) => (p.cemetery_id || DEFAULT_CEMETERY_ID) === cid,
+                                    );
+                                    if (groupPlots.length <= 1) return null;
+                                    const sorted = [...groupPlots].sort((a, b) => {
                                         if (a.lot_type === 'entrance' && b.lot_type !== 'entrance') return -1;
                                         if (b.lot_type === 'entrance' && a.lot_type !== 'entrance') return 1;
                                         const numA = parseInt(a.plot_number.split('-')[1] || '0', 10);
@@ -903,7 +1086,7 @@ export const MemorialMapPage: React.FC = () => {
                                         <Polyline
                                             key={`path-line-${cid}`}
                                             positions={sorted.map(
-                                                (p) => [p.lat || 14.6720, p.lng || 121.0410] as [number, number],
+                                                (p) => [p.lat || FALLBACK_PLOT_LAT, p.lng || FALLBACK_PLOT_LNG] as [number, number],
                                             )}
                                             pathOptions={{
                                                 color: '#14b8a6',
@@ -915,34 +1098,41 @@ export const MemorialMapPage: React.FC = () => {
                                         />
                                     );
                                 }
-                                return null;
+
+                                return <React.Fragment key={`conns-${cid}`}>{lines}</React.Fragment>;
                             });
                         })()}
 
-                        {/* Gate / Node Markers */}
-                        {nodes.map((node) => (
-                            <Marker key={node.id} position={[node.lat, node.lng]} icon={gateIcon}>
-                                <Popup>
-                                    <div className="text-slate-900 text-xs font-bold">
-                                        {node.node_label || node.id}
-                                    </div>
-                                </Popup>
-                            </Marker>
-                        ))}
+                        {/* Gate Markers From Cemetery Entrance Plots */}
+                        {plots
+                            .filter((p) => p.lot_type === 'entrance')
+                            .map((plot) => (
+                                <Marker
+                                    key={`gate-${plot.id}`}
+                                    position={[plot.lat || FALLBACK_PLOT_LAT, plot.lng || FALLBACK_PLOT_LNG]}
+                                    icon={gateIcon}
+                                >
+                                    <Popup>
+                                        <div className="text-slate-900 text-xs font-bold">
+                                            {plot.plot_number}
+                                        </div>
+                                    </Popup>
+                                </Marker>
+                            ))}
 
-                        {/* Plot Markers */}
+                        {/* Plot Markers (keep all cemetery assets visible; the searched plot is highlighted separately) */}
                         {plots
                             .filter((plot) => {
-                                if (selectedPlot) {
-                                    return plot.id === selectedPlot.id;
-                                }
+                                if (plot.lot_type === 'entrance') return false; // entrances rendered as gate markers below
                                 if (filterType !== 'all' && plot.lot_type !== filterType) return false;
                                 if (filterStatus !== 'all' && plot.status !== filterStatus) return false;
                                 return true;
                             })
                             .map((plot) => {
-                                const pLat = plot.lat || 14.6720;
-                                const pLng = plot.lng || 121.0410;
+                                const isTrackNode =
+                                    plot.lot_type === 'path' || plot.lot_type === 'border';
+                                const pLat = plot.lat || FALLBACK_PLOT_LAT;
+                                const pLng = plot.lng || FALLBACK_PLOT_LNG;
                                 const burialRecord = burials.find((b) => b.plot_id === plot.id);
 
                                 const dobStr = burialRecord?.date_of_birth
@@ -984,6 +1174,19 @@ export const MemorialMapPage: React.FC = () => {
                                     plot.status === 'full' ||
                                     Boolean(plot.deceased_name || burialRecord?.deceased_name);
                                 const isReserved = plot.status === 'reserved' && !isOccupied;
+
+                                // Path & border nodes are non-selectable in the public map: show them but
+                                // never open the pathfinding sidebar or a popup when clicked.
+                                if (isTrackNode) {
+                                    return (
+                                        <Marker
+                                            key={plot.id}
+                                            position={[pLat, pLng]}
+                                            icon={createPlotIcon(plot, zoomLevel)}
+                                            interactive={false}
+                                        />
+                                    );
+                                }
 
                                 return (
                                     <Marker
@@ -1121,7 +1324,7 @@ export const MemorialMapPage: React.FC = () => {
 
                                 return (
                                     <Marker
-                                        position={[selectedPlot.lat || 14.6720, selectedPlot.lng || 121.0410]}
+                                        position={[selectedPlot.lat || FALLBACK_PLOT_LAT, selectedPlot.lng || FALLBACK_PLOT_LNG]}
                                         icon={L.divIcon({
                                             className: 'custom-selected-plot-highlight',
                                             html: `
@@ -1201,10 +1404,11 @@ export const MemorialMapPage: React.FC = () => {
                                                 <div className="pt-1">
                                                     <button
                                                         onClick={() => {
-                                                            const targetNode =
-                                                                selectedPlot.nearest_path_node_id || 'node-1';
-                                                            setToNodeId(targetNode);
-                                                            calculatePath(fromNodeId, targetNode);
+                                                            setFlyToCenter([
+                                                                selectedPlot.lat || FALLBACK_PLOT_LAT,
+                                                                selectedPlot.lng || FALLBACK_PLOT_LNG,
+                                                            ]);
+                                                            setFlyToZoom(20);
                                                         }}
                                                         className="w-full bg-emerald-700 hover:bg-emerald-800 text-white font-bold py-1.5 px-2 rounded text-[11px] flex items-center justify-center gap-1 cursor-pointer transition-all shadow-sm"
                                                     >
@@ -1501,46 +1705,44 @@ export const MemorialMapPage: React.FC = () => {
                                                         selectedPlot?.deceased_name ||
                                                         selectedPlot?.inquirer_name ||
                                                         `Lot #${selectedPlot?.plot_number || 'A-01'}`,
-                                                ),
+                                                ) +
+                                                '&download=1',
                                         )}&color=064e3b`}
-                                        alt="Grave Location QR Pass"
+                                        alt="Download Offline Map QR Code"
                                         className="w-36 h-36 rounded-lg"
                                     />
                                 </div>
                                 <div>
-                                    <span className="text-xs font-bold text-slate-900 block">Digital Offline Pass</span>
+                                    <span className="text-xs font-bold text-slate-900 block">Offline Map QR</span>
                                     <p className="text-[11px] text-slate-500 mt-0.5">
-                                        Scan with camera to view interactive GPS map pass or download for offline park
-                                        navigation.
+                                        Scan with your camera to download an offline map of this grave location.
                                     </p>
                                 </div>
                                 <button
-                                    onClick={handleDownloadOfflinePass}
+                                    onClick={handleDownloadOfflineMap}
                                     className="w-full bg-emerald-700 hover:bg-emerald-800 text-white font-bold py-2.5 px-4 rounded-xl text-xs flex items-center justify-center gap-2 transition-all cursor-pointer shadow-md hover:scale-[1.02]"
                                 >
                                     <Download className="w-4 h-4" />
-                                    <span>Download Offline Map Pass</span>
+                                    <span>Download Offline Map</span>
                                 </button>
                             </div>
 
-                            {/* Starting Landmark / Gate Selector */}
-                            <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-2">
-                                <label className="block text-xs font-semibold text-slate-700">Starting Landmark / Gate</label>
-                                <select
-                                    value={fromNodeId}
-                                    onChange={(e) => {
-                                        setFromNodeId(e.target.value);
-                                        if (toNodeId) calculatePath(e.target.value, toNodeId);
-                                    }}
-                                    className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-900 focus:outline-none focus:border-emerald-600 font-medium"
-                                >
-                                    {nodes.map((n) => (
-                                        <option key={n.id} value={n.id}>
-                                            {n.node_label || n.id}
-                                        </option>
-                                    ))}
-                                </select>
-                            </div>
+                            {/* Starting Landmark / Gate */}
+                            {(() => {
+                                const entrance = findEntrancePlot(cemeteryPlots);
+                                return (
+                                    <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-1">
+                                        <label className="block text-xs font-semibold text-slate-700">
+                                            Starting Gate / Landmark
+                                        </label>
+                                        <p className="text-xs text-slate-500">
+                                            {entrance
+                                                ? `${entrance.plot_number} (${entrance.lot_type}) • Section ${entrance.section}`
+                                                : 'Walk through the cemetery main walkway'}
+                                        </p>
+                                    </div>
+                                );
+                            })()}
 
                             {/* Turn-by-Turn Pathfinding Result */}
                             {extendedTotalDistance !== null && extendedPathSteps.length > 0 && (

@@ -12,6 +12,10 @@ import {
     Ban,
     ZoomIn,
     Send,
+    Package,
+    Landmark,
+    Sparkles,
+    Hourglass,
 } from 'lucide-react';
 import { Navbar } from '@/Components/Public/Navbar';
 import { Plot } from '@/types';
@@ -64,6 +68,14 @@ export const MemorialLotsPage: React.FC = () => {
 
     const [plots, setPlots] = useState<Plot[]>([]);
     const [loading, setLoading] = useState(true);
+
+    // Inquiry category tabs
+    const [activeTab, setActiveTab] = useState<'lots' | 'plans' | 'columbarium' | 'services'>('lots');
+    const comingSoonTabs = [
+        { key: 'plans', label: 'Pre-Need Plans', icon: Package, desc: 'Pre-arranged memorial plans for future needs.' },
+        { key: 'columbarium', label: 'Columbarium', icon: Landmark, desc: 'Garden wall niches for ash internment.' },
+        { key: 'services', label: 'Funeral Services', icon: Sparkles, desc: 'End-to-end funeral assistance packages.' },
+    ] as const;
 
     // Filters
     const [search, setSearch] = useState(initialSearch);
@@ -268,10 +280,87 @@ export const MemorialLotsPage: React.FC = () => {
                             </div>
                         </div>
                     </div>
+
+                    {/* Inquiry Category Tabs (below the filter toolbar) */}
+                    <div className="flex flex-wrap items-center gap-2 mt-4 pt-4 border-t border-slate-100">
+                        <button
+                            onClick={() => setActiveTab('lots')}
+                            className={`flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold transition-all cursor-pointer ${
+                                activeTab === 'lots'
+                                    ? 'bg-emerald-700 text-white shadow-sm'
+                                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60 border border-slate-200'
+                            }`}
+                        >
+                            <Grid className="w-3.5 h-3.5" />
+                            Memorial Lots
+                        </button>
+
+                        {comingSoonTabs.map((tab) => {
+                            const Icon = tab.icon;
+                            const isActive = activeTab === tab.key;
+                            return (
+                                <button
+                                    key={tab.key}
+                                    onClick={() => setActiveTab(tab.key)}
+                                    className={`flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold transition-all cursor-pointer ${
+                                        isActive
+                                            ? 'bg-emerald-700 text-white shadow-sm'
+                                            : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60 border border-slate-200'
+                                    }`}
+                                >
+                                    <Icon className="w-3.5 h-3.5" />
+                                    {tab.label}
+                                    <span
+                                        className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full ${
+                                            isActive
+                                                ? 'bg-emerald-900/60 text-emerald-100'
+                                                : 'bg-amber-100 text-amber-700 border border-amber-300'
+                                        }`}
+                                    >
+                                        Coming Soon
+                                    </span>
+                                </button>
+                            );
+                        })}
+                    </div>
                 </div>
 
+                {/* Coming Soon Placeholder for non-lots tabs */}
+                {activeTab !== 'lots' && (
+                    <div className="bg-white border border-slate-200 rounded-2xl p-12 text-center text-slate-500 mb-8 shadow-sm">
+                        {(() => {
+                            const tab = comingSoonTabs.find((t) => t.key === activeTab);
+                            const Icon = tab?.icon ?? Hourglass;
+                            return (
+                                <>
+                                    <Icon className="w-12 h-12 text-amber-500 mx-auto mb-3" />
+                                    <span className="inline-flex items-center gap-1.5 bg-amber-100 text-amber-700 border border-amber-300 rounded-full px-3 py-1 text-[10px] font-bold uppercase tracking-widest mb-3">
+                                        <Hourglass className="w-3 h-3" />
+                                        Coming Soon
+                                    </span>
+                                    <h3 className="font-heading italic text-lg text-slate-900 font-bold mb-1">
+                                        {tab?.label}
+                                    </h3>
+                                    <p className="text-xs text-slate-500 mb-5 max-w-md mx-auto">
+                                        {tab?.desc} This section is currently under development and
+                                        will be available soon. Please check back later or submit an
+                                        inquiry for assistance.
+                                    </p>
+                                    <button
+                                        onClick={() => router.visit('/inquiry')}
+                                        className="bg-emerald-700 hover:bg-emerald-800 text-white text-xs px-5 py-2.5 rounded-full font-semibold inline-flex items-center gap-2 transition-colors cursor-pointer shadow-sm"
+                                    >
+                                        <Send className="w-3.5 h-3.5" />
+                                        Submit an Inquiry
+                                    </button>
+                                </>
+                            );
+                        })()}
+                    </div>
+                )}
+
                 {/* Lots Grid */}
-                {loading ? (
+                {activeTab === 'lots' && (loading ? (
                     <div className="py-20 text-center text-slate-500">
                         <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-emerald-600 mb-3" />
                         <p className="text-xs">Loading Himlayan memorial lot inventory...</p>
@@ -446,10 +535,10 @@ export const MemorialLotsPage: React.FC = () => {
                             </motion.div>
                         ))}
                     </div>
-                )}
+                ))}
 
                 {/* Pagination Controls */}
-                {totalPages > 1 && (
+                {activeTab === 'lots' && totalPages > 1 && (
                     <div className="mt-10 flex items-center justify-center gap-2">
                         <button
                             onClick={() => setPage((p) => Math.max(p - 1, 1))}
