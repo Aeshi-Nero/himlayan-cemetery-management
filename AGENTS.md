@@ -73,3 +73,21 @@ The `Engineer/EngineerWorkspacePage.tsx`, `Public/MemorialMapPage.tsx`, `Admin/M
 - Web server: `public/` (Laravel convention) — point docroot here on Render/Forge.
 - Env required: `APP_KEY`, `APP_URL`, `DB_*`, `GEMINI_API_KEY`, `SANCTUM_STATEFUL_DOMAINS`.
 - Commands scheduled via Laravel scheduler (`SendBurialReminders`, `SendInstallmentReminders`) — run `php artisan schedule:work`.
+
+## Deployment (Render — Docker)
+
+Deployment is Docker-based via Render. See `Dockerfile`, `render.yaml`, and `deploy/`.
+
+- **Dockerfile** is multi-stage: Node 22 builds `public/build` assets, then PHP 8.4-FPM (Alpine) serves via Nginx (port 8080) managed by supervisord.
+- **`deploy/entrypoint.sh`** runs on container start: generates `APP_KEY` if missing, touches the SQLite DB (chown'd to `www-data`), runs `migrate --force`, seeds only on an empty DB, then starts Nginx + PHP-FPM + scheduler (`schedule:work`).
+- **Volume/persistence:** Render mounts a disk at `/var/lib/laravel`; set `DB_DATABASE=/var/lib/laravel/data/database.sqlite`.
+- **Health check:** `/up` (Laravel's built-in route).
+- Verify locally: `docker build -t himlayan:test . && docker run -p 8080:8080 himlayan:test` then curl `/up`.
+- Deploying requires PHP 8.4 (the Composer lockfile pins packages needing `php >=8.4.1`).
+- Local rebuild smoke test:
+  ```bash
+  KEY="base64:$(openssl rand -base64 32)"
+  docker run -p 8090:8080 -e APP_KEY="$KEY" -e APP_URL=http://localhost:8090 \
+    -e DB_CONNECTION=sqlite -e DB_DATABASE=/var/lib/laravel/data/database.sqlite \
+    -e SESSION_DRIVER=database -e CACHE_STORE=database -e QUEUE_CONNECTION=database himlayan:test
+  ```

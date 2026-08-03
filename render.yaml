@@ -1,0 +1,47 @@
+---
+# Render blueprint for the Himlayan Cemetery Management System.
+# Uses the multi-stage Dockerfile (Node build + PHP-FPM + Nginx) defined in this repo.
+#
+# The scheduler (reminders:burial, reminders:installment) runs via `php artisan
+# schedule:work` inside the container (see deploy/supervisord.conf), so no
+# separate cron service is needed.
+services:
+  - type: web
+    name: himlayan-cemetery
+    runtime: docker
+    repo: https://github.com/Aeshi-Nero/himlayan-cemetery-management
+    plan: starter
+    dockerContext: .
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /up
+    envVars:
+      - key: APP_NAME
+        value: Himlayan Cemetery Management System
+      - key: APP_ENV
+        value: production
+      - key: APP_DEBUG
+        value: "false"
+      - key: APP_URL
+        value: https://himlayan-cemetery.onrender.com
+      - key: APP_KEY
+        generateValue: true
+      - key: DB_CONNECTION
+        value: sqlite
+      - key: DB_DATABASE
+        value: /var/lib/laravel/data/database.sqlite
+      - key: SESSION_DRIVER
+        value: database
+      - key: CACHE_STORE
+        value: database
+      - key: QUEUE_CONNECTION
+        value: database
+      - key: GEMINI_API_KEY
+        value: ""
+      - key: SANCTUM_STATEFUL_DOMAINS
+        value: himlayan-cemetery.onrender.com
+      - key: LOG_CHANNEL
+        value: stderr
+    disk:
+      name: laravel-data
+      mountPath: /var/lib/laravel
+      sizeGB: 1
