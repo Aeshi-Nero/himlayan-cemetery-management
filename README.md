@@ -1,58 +1,93 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# Himlayan Cemetery Management System
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+Cemetery management platform for Himlayan Memorial Park, Solano, Nueva Vizcaya. A **Laravel 13 + Inertia + React** application covering public memorial maps, online inquiries, burial permits, pre-need plans, columbary, and a full role-based admin console.
 
-## About Laravel
+## Features
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+- **Interactive Memorial Map** — Leaflet GIS map with A* pathfinding navigation across the cemetery's path-node graph
+- **Public Portals** — Lot catalog, memorial map, inquiry submission, pre-need plans, columbarium and reservation flows
+- **Admin Console** — Role-based (super admin / RCC / engineer / staff)
+  - Plots, contracts & installment payments, burial scheduling & permits
+  - Pre-need plans, columbary niches, client feedback & notifications
+  - Users, settings, audit logs, reports, map/pathway editors
+- **Engineer Workspace** — GIS map editor: drag-and-drop plot placement, border polygon editing, entrance/path/boundary tools, undo/redo
+- **A\* Pathfinding** — turn-by-turn navigation across the cemetery path network
+- **Burial Permits** — procedure workflow with PDF export (barryvdh/laravel-dompdf)
+- **Gemini AI** — visitor concierge chat + image analysis for documents/headstones
+- **Automations** — scheduled reminders for burials and installment payments
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+## Tech Stack
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+| Layer | Technology |
+|-------|-----------|
+| Backend | Laravel 13 (PHP 8.3), Sanctum, Eloquent, scheduler |
+| Frontend | Inertia + React 19, TypeScript (strict), Tailwind v4 |
+| GIS | Leaflet, react-leaflet, Leaflet Draw |
+| Docs | barryvdh/laravel-dompdf |
+| AI | Google Gemini (chat + image analysis) |
 
-## Learning Laravel
+## Getting Started
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
+### Prerequisites
+- PHP 8.3+, Composer
+- Node.js 22+, npm
 
-In addition, [Laracasts](https://laracasts.com) contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
-
-You can also watch bite-sized lessons with real-world projects on [Laravel Learn](https://laravel.com/learn), where you will be guided through building a Laravel application from scratch while learning PHP fundamentals.
-
-## Agentic Development
-
-Laravel's predictable structure and conventions make it ideal for AI coding agents like Claude Code, Cursor, and GitHub Copilot. Install [Laravel Boost](https://laravel.com/docs/ai) to supercharge your AI workflow:
+### Installation
 
 ```bash
-composer require laravel/boost --dev
-
-php artisan boost:install
+git clone https://github.com/Aeshi-Nero/himlayan-cemetery-management.git
+cd himlayan-cemetery-management
+composer install
+cp .env.example .env
+php artisan key:generate
+php artisan migrate --seed
+npm install
+npm run build
 ```
 
-Boost provides your agent 15+ tools and skills that help agents build Laravel applications while following best practices.
+Or run the convenience script: `composer run setup`
 
-## Contributing
+### Development
+```bash
+composer run dev   # server + queue + logs + Vite concurrently
+```
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+## Environment Variables
 
-## Code of Conduct
+| Variable | Description |
+|----------|-------------|
+| `APP_KEY` | Laravel app key (from `php artisan key:generate`) |
+| `APP_URL` | Application base URL |
+| `DB_CONNECTION` / `DB_HOST` / `DB_DATABASE` / `DB_USERNAME` / `DB_PASSWORD` | Database |
+| `GEMINI_API_KEY` | Google Gemini API key for AI concierge |
+| `SANCTUM_STATEFUL_DOMAINS` | Domains for SPA-session auth |
+| `MAIL_*` | Outbound mail for notifications/reminders |
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+## Default Accounts
 
-## Security Vulnerabilities
+Seeded by `DatabaseSeeder`. Default passwords follow the demo policy; change in production.
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+| Email | Role |
+|-------|------|
+| `admin@himlayan.gov.ph` | Super Admin |
+| `rcc@himlayan.gov.ph` | RCC Clerk |
+| `engineer@himlayan.gov.ph` | Engineer |
 
-## License
+## Key Routes
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+- Public: `/`, `/lots`, `/map`, `/inquiry`, `/plans`, `/columbarium`, `/reserve`
+- Admin: `/admin/dashboard` (+ many others), gated by role
+- Engineer: `/engineer/workspace`
+
+## API
+
+REST-style JSON under `/api`. See `routes/web.php`. RBAC enforced server-side via `role:` middleware:
+
+- Public reads — plots, burials, pathfinding, ceremony-map, public inquiries
+- Admin (auth) — contracts, payments, burials, permits, plans, niches, clients, feedback, notifications, audit, dashboard
+- Super admin only — users, settings
+
+## Notes
+
+- A single Express/TypeScript precursor existed; it is preserved on the `express-legacy` git tag.
+- Run scheduled jobs (`SendBurialReminders`, `SendInstallmentReminders`) via `php artisan schedule:work`.
