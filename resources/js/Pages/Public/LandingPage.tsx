@@ -167,6 +167,7 @@ export const LandingPage: React.FC = () => {
     const [activeCategory, setActiveCategory] = useState<string>('ALL');
     const [selectedGalleryItem, setSelectedGalleryItem] = useState<GalleryItem | null>(null);
     const [mapUsageCount, setMapUsageCount] = useState<number>(0);
+    const [mapUsageBaseline, setMapUsageBaseline] = useState<number>(0);
     const [availablePlotsCount, setAvailablePlotsCount] = useState<number>(52);
 
     // Search dropdown auto-suggest state
@@ -179,6 +180,7 @@ export const LandingPage: React.FC = () => {
         const loadUsage = async () => {
             const count = await getMapUsageCount();
             setMapUsageCount(count);
+            setMapUsageBaseline(count);
         };
         loadUsage();
 
@@ -346,7 +348,7 @@ export const LandingPage: React.FC = () => {
                 <div className="relative z-10 max-w-4xl mx-auto px-4 text-center flex flex-col items-center justify-center mt-2 sm:mt-4 md:mt-6">
                     <BlurText
                         text="Honoring Lives, Preserving Memories"
-                        className="text-3xl sm:text-5xl md:text-6xl font-heading italic font-bold text-white leading-[1.1] tracking-tight mb-4 drop-shadow-2xl"
+                        className="mt-16 sm:mt-24 md:mt-32 text-3xl sm:text-5xl md:text-6xl font-heading italic font-bold text-white leading-[1.1] tracking-tight mb-4 drop-shadow-2xl"
                         delay={0.2}
                     />
 
@@ -512,22 +514,35 @@ export const LandingPage: React.FC = () => {
                                 transition={{ duration: 0.8, delay: idx * 0.15 }}
                                 className="bg-slate-50 rounded-2xl p-8 min-h-[180px] hover:shadow-lg transition-all duration-300 border border-slate-200"
                             >
-                                <div className="text-4xl sm:text-5xl font-heading italic font-bold text-emerald-700 mb-2 overflow-hidden">
+                                <div className="text-4xl sm:text-5xl font-heading italic font-bold text-emerald-700 mb-2 flex items-center justify-center gap-3">
                                     {stat.isLiveCounter ? (
-                                        <motion.span
-                                            key={mapUsageCount}
-                                            initial={{ scale: 1.35, y: -6, color: '#059669' }}
-                                            animate={{ scale: 1, y: 0, color: '#047857' }}
-                                            transition={{
-                                                duration: 0.5,
-                                                type: 'spring',
-                                                stiffness: 350,
-                                                damping: 20,
-                                            }}
-                                            className="inline-block"
-                                        >
-                                            {mapUsageCount.toLocaleString()}
-                                        </motion.span>
+                                        <>
+                                            <motion.span
+                                                key={mapUsageCount}
+                                                initial={{ scale: 1.35, y: -6, color: '#059669' }}
+                                                animate={{ scale: 1, y: 0, color: '#047857' }}
+                                                transition={{
+                                                    duration: 0.5,
+                                                    type: 'spring',
+                                                    stiffness: 350,
+                                                    damping: 20,
+                                                }}
+                                                className="inline-block"
+                                            >
+                                                {mapUsageCount.toLocaleString()}
+                                            </motion.span>
+                                            {mapUsageCount > mapUsageBaseline && (
+                                                <motion.span
+                                                    key={`delta-${mapUsageCount}`}
+                                                    initial={{ scale: 0.5, opacity: 0 }}
+                                                    animate={{ scale: 1, opacity: 1 }}
+                                                    transition={{ duration: 0.35, type: 'spring', stiffness: 400, damping: 18 }}
+                                                    className="inline-flex items-center justify-center min-w-8 h-8 px-2 rounded-md bg-emerald-600 text-white text-sm font-bold font-body shadow-md"
+                                                >
+                                                    +{mapUsageCount - mapUsageBaseline}
+                                                </motion.span>
+                                            )}
+                                        </>
                                     ) : (
                                         stat.number
                                     )}
