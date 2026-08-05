@@ -26,7 +26,7 @@ import {
 } from 'lucide-react';
 import { BlurText } from '@/Components/Public/BlurText';
 import { Navbar } from '@/Components/Public/Navbar';
-import { getMapUsageCount, incrementMapUsageCount } from '@/utils/mapUsageTracker';
+import { getMapUsageCount } from '@/utils/mapUsageTracker';
 
 // Cemetery Pictures
 import cemeteryLawnImg from '@/assets/images/cemetery_lawn_gardens_1784913858158.jpg';
@@ -166,7 +166,7 @@ export const LandingPage: React.FC = () => {
     const [searchQuery, setSearchQuery] = useState('');
     const [activeCategory, setActiveCategory] = useState<string>('ALL');
     const [selectedGalleryItem, setSelectedGalleryItem] = useState<GalleryItem | null>(null);
-    const [mapUsageCount, setMapUsageCount] = useState<number>(15842);
+    const [mapUsageCount, setMapUsageCount] = useState<number>(0);
     const [availablePlotsCount, setAvailablePlotsCount] = useState<number>(52);
 
     // Search dropdown auto-suggest state
@@ -209,7 +209,13 @@ export const LandingPage: React.FC = () => {
             }
         };
         window.addEventListener('himlayan_map_usage_updated', handleUpdate);
-        return () => window.removeEventListener('himlayan_map_usage_updated', handleUpdate);
+        window.addEventListener('himlayan_plots_updated', fetchPlotsAndBurials);
+        window.addEventListener('storage', fetchPlotsAndBurials);
+        return () => {
+            window.removeEventListener('himlayan_map_usage_updated', handleUpdate);
+            window.removeEventListener('himlayan_plots_updated', fetchPlotsAndBurials);
+            window.removeEventListener('storage', fetchPlotsAndBurials);
+        };
     }, []);
 
     // Close search dropdown on click outside
@@ -298,18 +304,15 @@ export const LandingPage: React.FC = () => {
     const handleSelectSuggestion = async (name: string) => {
         setSearchQuery(name);
         setIsDropdownOpen(false);
-        await incrementMapUsageCount();
         router.visit(`/map?search=${encodeURIComponent(name)}`);
     };
 
     const handleNavigateToMap = async () => {
-        await incrementMapUsageCount();
         router.visit('/map');
     };
 
     const handleSearchSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
-        await incrementMapUsageCount();
         if (searchQuery.trim()) {
             router.visit(`/map?search=${encodeURIComponent(searchQuery.trim())}`);
         } else {
@@ -377,7 +380,7 @@ export const LandingPage: React.FC = () => {
                                 }}
                                 onFocus={() => setIsDropdownOpen(true)}
                                 placeholder="Find a loved one (e.g. Maria, Santos)..."
-                                className="w-full bg-transparent text-slate-900 placeholder-slate-500 text-sm font-body focus:outline-none px-2 font-medium"
+                                className="w-full bg-transparent text-slate-900 placeholder-slate-500 text-sm font-body focus:outline-none px-2 font-medium appearance-none border-none"
                             />
                             <button
                                 type="submit"

@@ -4,7 +4,6 @@ import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
 import L from 'leaflet';
 import { Navbar } from '@/Components/Public/Navbar';
 import { Plot } from '@/types';
-import { incrementMapUsageCount } from '@/utils/mapUsageTracker';
 import { FALLBACK_PLOT_LAT, FALLBACK_PLOT_LNG } from '@/constants/geo';
 import { MapPin, Navigation, ArrowLeft, Send, Camera } from 'lucide-react';
 
@@ -48,7 +47,6 @@ export const LotDetailPage: React.FC<{ plotId?: string }> = ({ plotId }) => {
 
     useEffect(() => {
         if (!id) return;
-        incrementMapUsageCount();
         const fetchDetail = async () => {
             setLoading(true);
             try {

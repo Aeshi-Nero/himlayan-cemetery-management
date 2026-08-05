@@ -540,6 +540,6 @@ class DatabaseSeeder extends Seeder
 
     private function seedSettings(): void
     {
-        Setting::set('map_usage_count', 15842);
+        Setting::set('map_usage_count', 0);
     }
 }

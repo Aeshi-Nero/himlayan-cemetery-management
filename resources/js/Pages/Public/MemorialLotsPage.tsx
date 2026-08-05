@@ -19,7 +19,6 @@ import {
 } from 'lucide-react';
 import { Navbar } from '@/Components/Public/Navbar';
 import { Plot } from '@/types';
-import { incrementMapUsageCount } from '@/utils/mapUsageTracker';
 
 import cemeteryLawnImg from '@/assets/images/cemetery_lawn_gardens_1784913858158.jpg';
 import mausoleumImg from '@/assets/images/mausoleum_architecture_1784913872418.jpg';
@@ -192,7 +191,6 @@ export const MemorialLotsPage: React.FC = () => {
                         <div className="flex items-center gap-2 self-start sm:self-auto shrink-0">
                             <button
                                 onClick={async () => {
-                                    await incrementMapUsageCount();
                                     router.visit('/map');
                                 }}
                                 className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-4 py-2.5 rounded-full flex items-center gap-2 transition-all cursor-pointer shadow-md hover:shadow-lg border border-emerald-400/30"

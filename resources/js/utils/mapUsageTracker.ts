@@ -1,5 +1,5 @@
 const STORAGE_KEY = 'himlayan_map_usage_count';
-const DEFAULT_BASELINE = 15842;
+const DEFAULT_BASELINE = 0;
 
 export const getMapUsageCount = async (): Promise<number> => {
     try {

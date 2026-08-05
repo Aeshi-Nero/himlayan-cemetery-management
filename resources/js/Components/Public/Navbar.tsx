@@ -92,7 +92,7 @@ export const Navbar: React.FC = () => {
                         className={`flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-body font-semibold transition-all ${
                             currentPath === '/lots'
                                 ? 'bg-emerald-700 text-white shadow-sm'
-                                : 'bg-emerald-700 text-white shadow-sm hover:bg-emerald-800'
+                                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
                         }`}
                     >
                         <FileSearch className="w-3.5 h-3.5" />

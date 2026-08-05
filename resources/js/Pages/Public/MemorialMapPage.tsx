@@ -745,9 +745,6 @@ export const MemorialMapPage: React.FC = () => {
     };
 
     useEffect(() => {
-        // Increment global map usage count when user visits interactive map
-        incrementMapUsageCount();
-
         const fetchData = async () => {
             try {
                 const [plotsRes, burialsRes, connRes] = await Promise.all([
@@ -913,7 +910,7 @@ export const MemorialMapPage: React.FC = () => {
                                 }}
                                 onFocus={() => setIsDropdownOpen(true)}
                                 placeholder="Find a loved one (e.g. Maria, Santos)..."
-                                className="w-full bg-transparent text-slate-900 placeholder-slate-500 text-sm font-body focus:outline-none px-2 font-medium"
+                                className="w-full bg-transparent text-slate-900 placeholder-slate-500 text-sm font-body focus:outline-none px-2 font-medium appearance-none border-none"
                             />
                             <button
                                 type="submit"
