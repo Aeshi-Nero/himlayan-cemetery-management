@@ -15,8 +15,6 @@ import {
   FALLBACK_PLOT_LNG,
   FOCUS_ZOOM_LEVEL,
   FLY_DURATION_SECONDS,
-  DUPLICATE_SINGLE_OFFSET,
-  DUPLICATE_MULTI_OFFSET,
   PLOT_NUMBER_BASE,
   MIN_BORDER_PLOTS,
   MIN_POLYGON_POINTS,
@@ -1480,8 +1478,19 @@ export default function EngineerWorkspacePage() {
 
   const duplicatePlot = async (plot: Plot) => {
     saveToUndoStack();
-    const offsetLat = (plot.lat || DEFAULT_MAP_CENTER[0]) + DUPLICATE_SINGLE_OFFSET;
-    const offsetLng = (plot.lng || DEFAULT_MAP_CENTER[1]) + DUPLICATE_SINGLE_OFFSET;
+    // Place the duplicate beside the original (to its right) instead of a fixed degree offset,
+    // so it stays near the source regardless of zoom level or border shape.
+    const srcLat = plot.lat || DEFAULT_MAP_CENTER[0];
+    const srcLng = plot.lng || DEFAULT_MAP_CENTER[1];
+    let offsetLat = srcLat;
+    let offsetLng = srcLng;
+    if (map) {
+      const { w } = calcPlotDimensions(plot, zoomLevel);
+      const srcPt = map.latLngToContainerPoint(L.latLng(srcLat, srcLng));
+      const dupPt = map.containerPointToLatLng(L.point(srcPt.x + Math.max(w + 10, 24), srcPt.y));
+      offsetLat = dupPt.lat;
+      offsetLng = dupPt.lng;
+    }
     const nextPlotNumber = `${plot.section}-${plots.length + PLOT_NUMBER_BASE}`;
     const targetLotType = plot.lot_type === 'border' ? 'path' : plot.lot_type;
     try {
@@ -1621,14 +1630,21 @@ export default function EngineerWorkspacePage() {
   const duplicateMultiplePlots = async (plotsToDuplicate: Plot[]) => {
     try {
       saveToUndoStack();
-      const shiftLat = DUPLICATE_MULTI_OFFSET;
-      const shiftLng = DUPLICATE_MULTI_OFFSET;
-
       const idMap = new Map<string, string>();
 
       const promises = plotsToDuplicate.map(async (plot, index) => {
-        const offsetLat = (plot.lat || DEFAULT_MAP_CENTER[0]) + shiftLat;
-        const offsetLng = (plot.lng || DEFAULT_MAP_CENTER[1]) + shiftLng;
+        // Place each copy beside its original (to its right) at the current zoom level.
+        const srcLat = plot.lat || DEFAULT_MAP_CENTER[0];
+        const srcLng = plot.lng || DEFAULT_MAP_CENTER[1];
+        let offsetLat = srcLat;
+        let offsetLng = srcLng;
+        if (map) {
+          const { w } = calcPlotDimensions(plot, zoomLevel);
+          const srcPt = map.latLngToContainerPoint(L.latLng(srcLat, srcLng));
+          const dupPt = map.containerPointToLatLng(L.point(srcPt.x + Math.max(w + 10, 24), srcPt.y));
+          offsetLat = dupPt.lat;
+          offsetLng = dupPt.lng;
+        }
         const nextPlotNumber = plot.lot_type === 'border' ? `Border-${Date.now().toString().slice(-4)}-${index}` : `${plot.section}-${plots.length + PLOT_NUMBER_BASE + index}`;
         const res = await window.axios.post('/api/plots', {
           plot_number: nextPlotNumber,
@@ -3873,39 +3889,7 @@ export default function EngineerWorkspacePage() {
                       </div>
                     )}
 
-                    <div className="pt-1.5 border-t border-amber-200/80">
-                      <label className="block text-[10px] font-bold text-amber-900 uppercase mb-1">Set / Change Scheduled Burial Date</label>
-                      <input
-                        type="datetime-local"
-                        value={
-                          activePlot.burial_date
-                            ? new Date(activePlot.burial_date).toISOString().slice(0, 16)
-                            : ''
-                        }
-                        onChange={async (e) => {
-                          const newDateStr = e.target.value ? new Date(e.target.value).toISOString() : '';
-                          const updated = {
-                            status: 'reserved' as const,
-                            burial_date: newDateStr,
-                          };
-                          setPlots((prev) => prev.map((p) => p.id === activePlot.id ? { ...p, ...updated } : p));
-                          setSelectedPlot((p) => p && p.id === activePlot.id ? { ...p, ...updated } : p);
-                          if (!activePlot.id.startsWith('plot-new-')) {
-                            try {
-                              await window.axios.put('/api/plots/' + activePlot.id, updated);
-                              window.dispatchEvent(new CustomEvent('himlayan_plots_updated'));
-                            } catch (err) {
-                              console.error('Error updating burial date:', err);
-                            }
-                          }
-                        }}
-                        className="w-full bg-white border border-amber-300 rounded-lg px-2 py-1 text-xs text-slate-900 focus:outline-none focus:border-amber-600"
-                      />
-                      <p className="text-[10px] text-amber-800/80 mt-1 italic leading-tight">
-                        * Automatically turns Red (Occupied) once burial date passes.
-                      </p>
                     </div>
-                  </div>
                 </div>
               )}
 
