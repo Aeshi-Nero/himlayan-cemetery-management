@@ -751,6 +751,14 @@ const MultiSelectOverlay: React.FC<{
 
 const iconCache = new Map<string, L.DivIcon>();
 
+const escapeHtml = (value: string): string =>
+  value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
 const createPlotIcon = (
   plot: Plot,
   isSelected?: boolean,
@@ -786,7 +794,7 @@ const createPlotIcon = (
     const entStyle = `width: ${entW}px; height: ${entH}px; transform: rotate(${r}deg); ${activeStyle}`;
     icon = L.divIcon({
       className: 'custom-engineer-plot-marker',
-      html: `<div style="background-color: #0d9488; border-radius: 50%; border: 2.5px solid #f59e0b; box-shadow: 0 0 10px #f59e0b, 0 0 5px #0d9488; cursor: pointer; display: flex; align-items: center; justify-content: center; ${entStyle}" title="Main Entrance Node">
+      html: `<div style="background-color: #0d9488; border-radius: 50%; border: 2.5px solid #f59e0b; box-shadow: 0 0 10px #f59e0b, 0 0 5px #0d9488; cursor: pointer; display: flex; align-items: center; justify-content: center; ${entStyle}" title="${escapeHtml(plot.name || 'Main Entrance Node')}">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
           <path d="M18 20V6a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v14"/>
           <path d="M2 20h20"/>
@@ -1771,6 +1779,7 @@ export default function EngineerWorkspacePage() {
     const optimisticPlot: Plot = {
       id: tempId,
       plot_number: plotNumber,
+      name: lotType === 'entrance' ? 'Main Entrance' : undefined,
       section: sec,
       lot_type: lotType,
       capacity,
@@ -1885,6 +1894,7 @@ export default function EngineerWorkspacePage() {
     // Sync with server in background
     window.axios.post('/api/plots', {
       plot_number: plotNumber,
+      name: lotType === 'entrance' ? 'Main Entrance' : undefined,
       section: sec,
       lot_type: lotType,
       capacity,
@@ -3706,6 +3716,29 @@ export default function EngineerWorkspacePage() {
                   </button>
                 </div>
 
+                {activePlot.lot_type === 'entrance' && (
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                      Gate Name
+                    </label>
+                    <input
+                      type="text"
+                      defaultValue={activePlot.name || ''}
+                      placeholder="e.g. Main Entrance"
+                      onBlur={(e) => {
+                        const value = e.target.value.trim();
+                        if (value !== (activePlot.name || '')) {
+                          updatePlotField(activePlot.id, { name: value || undefined });
+                        }
+                      }}
+                      className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:border-teal-600 focus:bg-white transition-all"
+                    />
+                    <p className="text-[10px] text-slate-400 mt-1">
+                      Shown as the starting gate in the public map's pathfinding navigator.
+                    </p>
+                  </div>
+                )}
+
                 <button
                   onClick={() => {
                     setConnectingNodeId(activePlot.id);
@@ -4416,6 +4449,29 @@ export default function EngineerWorkspacePage() {
                     className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-emerald-600 focus:bg-white transition-all"
                   />
                 </div>
+
+                {editingPlotDetails.lot_type === 'entrance' && (
+                  <div>
+                    <label className="block font-bold text-slate-700 mb-1">
+                      Gate Name
+                    </label>
+                    <input
+                      type="text"
+                      value={editingPlotDetails.name || ''}
+                      placeholder="e.g. Main Entrance"
+                      onChange={(e) =>
+                        setEditingPlotDetails({
+                          ...editingPlotDetails,
+                          name: e.target.value,
+                        })
+                      }
+                      className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-emerald-600 focus:bg-white transition-all"
+                    />
+                    <p className="text-[10px] text-slate-400 mt-1">
+                      Shown as the starting gate in the public map's pathfinding navigator.
+                    </p>
+                  </div>
+                )}
 
                 <div>
                   <label className="block font-bold text-slate-700 mb-1">

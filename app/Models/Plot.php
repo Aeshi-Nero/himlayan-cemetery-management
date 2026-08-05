@@ -18,6 +18,7 @@ class Plot extends Model
     protected $fillable = [
         'id',
         'plot_number',
+        'name',
         'section',
         'lat',
         'lng',

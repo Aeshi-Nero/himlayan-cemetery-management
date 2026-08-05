@@ -17,6 +17,7 @@ class PlotController extends Controller
     /** Whitelist of fields the update endpoint is allowed to change. */
     private const UPDATABLE_FIELDS = [
         'plot_number',
+        'name',
         'section',
         'lat',
         'lng',
@@ -103,6 +104,7 @@ class PlotController extends Controller
     {
         $data = $request->validate([
             'plot_number' => ['required', 'string'],
+            'name' => ['nullable', 'string'],
             'section' => ['required', 'string'],
             'lot_type' => ['required', 'string', 'in:single,family,apartment,path,border,entrance'],
             'capacity' => ['nullable', 'integer', 'min:1'],
@@ -121,6 +123,7 @@ class PlotController extends Controller
         $plot = Plot::create([
             'id' => $request->input('id') ?? 'plot-'.Str::uuid(),
             'plot_number' => $data['plot_number'],
+            'name' => $data['name'] ?? null,
             'section' => $data['section'],
             'lot_type' => $lotType,
             'capacity' => $data['capacity'] ?? match ($lotType) {
@@ -156,6 +159,7 @@ class PlotController extends Controller
 
         $data = $request->validate([
             'plot_number' => ['sometimes', 'string'],
+            'name' => ['sometimes', 'string'],
             'section' => ['sometimes', 'string'],
             'lat' => ['sometimes', 'numeric'],
             'lng' => ['sometimes', 'numeric'],

@@ -73,7 +73,7 @@ const createPlotIcon = (plot: Plot, zoomLevel: number = 16) => {
         const entStyle = `width: ${entW}px; height: ${entH}px; transform: rotate(${r}deg);`;
         return L.divIcon({
             className: 'custom-plot-marker',
-            html: `<div style="background-color: #0d9488; border-radius: 50%; border: 2.5px solid #f59e0b; box-shadow: 0 0 10px #f59e0b, 0 0 5px #0d9488; cursor: pointer; display: flex; align-items: center; justify-content: center; ${entStyle}" title="Main Entrance Node">
+            html: `<div style="background-color: #0d9488; border-radius: 50%; border: 2.5px solid #f59e0b; box-shadow: 0 0 10px #f59e0b, 0 0 5px #0d9488; cursor: pointer; display: flex; align-items: center; justify-content: center; ${entStyle}" title="${(plot.name || 'Main Entrance Node').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
           <path d="M18 20V6a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v14"/>
           <path d="M2 20h20"/>
@@ -231,6 +231,8 @@ const buildCemeteryPathSteps = (
         };
     }
 
+    const gateLabel = (g: Plot): string => g.name || `Gate ${g.plot_number}`;
+
     const adj = buildConnectionAdjacency(conns);
     const route = bfsPlotRoute(gateId, target.id, adj);
 
@@ -245,7 +247,7 @@ const buildCemeteryPathSteps = (
                     nodeId: `from-gate-${gateId}`,
                     lat: gateLat,
                     lng: gateLng,
-                    label: `Start at ${gate.plot_number} (${gate.lot_type})`,
+                    label: `Start at ${gateLabel(gate)}`,
                     distanceFromPrevious: 0,
                 },
                 {
@@ -274,7 +276,7 @@ const buildCemeteryPathSteps = (
                 nodeId,
                 lat: pLat,
                 lng: pLng,
-                label: `Start at ${plot.plot_number} (${plot.lot_type})`,
+                label: `Start at ${gateLabel(plot)}`,
                 distanceFromPrevious: 0,
             });
             continue;
@@ -1110,8 +1112,13 @@ export const MemorialMapPage: React.FC = () => {
                                     icon={gateIcon}
                                 >
                                     <Popup>
-                                        <div className="text-slate-900 text-xs font-bold">
-                                            {plot.plot_number}
+                                        <div className="text-slate-900 text-xs space-y-0.5">
+                                            <div className="font-bold">
+                                                {plot.name || 'Main Entrance'}
+                                            </div>
+                                            <div className="text-slate-500">
+                                                {plot.plot_number} • Section {plot.section}
+                                            </div>
                                         </div>
                                     </Popup>
                                 </Marker>
@@ -1120,14 +1127,15 @@ export const MemorialMapPage: React.FC = () => {
                         {/* Plot Markers (keep all cemetery assets visible; the searched plot is highlighted separately) */}
                         {plots
                             .filter((plot) => {
-                                if (plot.lot_type === 'entrance') return false; // entrances rendered as gate markers below
+                                // Entrances render as gate markers below; path & border nodes
+                                // are drawn as lines only (no node dots) on the public map.
+                                if (plot.lot_type === 'entrance') return false;
+                                if (plot.lot_type === 'path' || plot.lot_type === 'border') return false;
                                 if (filterType !== 'all' && plot.lot_type !== filterType) return false;
                                 if (filterStatus !== 'all' && plot.status !== filterStatus) return false;
                                 return true;
                             })
                             .map((plot) => {
-                                const isTrackNode =
-                                    plot.lot_type === 'path' || plot.lot_type === 'border';
                                 const pLat = plot.lat || FALLBACK_PLOT_LAT;
                                 const pLng = plot.lng || FALLBACK_PLOT_LNG;
                                 const burialRecord = burials.find((b) => b.plot_id === plot.id);
@@ -1171,19 +1179,6 @@ export const MemorialMapPage: React.FC = () => {
                                     plot.status === 'full' ||
                                     Boolean(plot.deceased_name || burialRecord?.deceased_name);
                                 const isReserved = plot.status === 'reserved' && !isOccupied;
-
-                                // Path & border nodes are non-selectable in the public map: show them but
-                                // never open the pathfinding sidebar or a popup when clicked.
-                                if (isTrackNode) {
-                                    return (
-                                        <Marker
-                                            key={plot.id}
-                                            position={[pLat, pLng]}
-                                            icon={createPlotIcon(plot, zoomLevel)}
-                                            interactive={false}
-                                        />
-                                    );
-                                }
 
                                 return (
                                     <Marker
@@ -1734,7 +1729,7 @@ export const MemorialMapPage: React.FC = () => {
                                         </label>
                                         <p className="text-xs text-slate-500">
                                             {entrance
-                                                ? `${entrance.plot_number} (${entrance.lot_type}) • Section ${entrance.section}`
+                                                ? `${entrance.name || `Gate ${entrance.plot_number}`} • Section ${entrance.section}`
                                                 : 'Walk through the cemetery main walkway'}
                                         </p>
                                     </div>

@@ -73,6 +73,7 @@ export interface Client {
 export interface Plot {
     id: string;
     plot_number: string;
+    name?: string;
     section: string;
     lat?: number;
     lng?: number;
