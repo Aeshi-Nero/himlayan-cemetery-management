@@ -1197,6 +1197,34 @@ export default function EngineerWorkspacePage() {
   const lastFlownCemeteryRef = useRef<string | null>(null);
   const markerRefs = useRef<Map<string, L.Marker>>(new Map());
 
+  // Keep the right-click inspector anchored to its plot while the map pans/zooms.
+  const plotContextMenuPlotId = plotContextMenu?.plotId;
+  useEffect(() => {
+    if (!map || !plotContextMenuPlotId) return;
+    const activePlot = plots.find((p) => p.id === plotContextMenuPlotId);
+    if (!activePlot) return;
+    if (activePlot.lat == null || activePlot.lng == null) return;
+    const plotLat = activePlot.lat;
+    const plotLng = activePlot.lng;
+
+    const syncContextMenuPosition = () => {
+      const container = map.getContainer();
+      const rect = container.getBoundingClientRect();
+      const pt = map.latLngToContainerPoint(L.latLng(plotLat, plotLng));
+      setPlotContextMenu((prev) =>
+        prev && prev.plotId === plotContextMenuPlotId
+          ? { ...prev, x: rect.left + pt.x, y: rect.top + pt.y }
+          : prev
+      );
+    };
+
+    syncContextMenuPosition();
+    map.on('zoom move zoomend moveend', syncContextMenuPosition);
+    return () => {
+      map.off('zoom move zoomend moveend', syncContextMenuPosition);
+    };
+  }, [map, plotContextMenuPlotId, plots]);
+
   const [undoStack, setUndoStack] = useState<Plot[][]>([]);
   const [redoStack, setRedoStack] = useState<Plot[][]>([]);
 
