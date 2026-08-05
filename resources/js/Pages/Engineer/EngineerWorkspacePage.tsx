@@ -593,6 +593,11 @@ const MultiSelectOverlay: React.FC<{
   const cx = base.x + base.w / 2;
   const cy = base.y + base.h / 2;
 
+  // Anchor buttons to the frozen bounds so they do not drift with rotation.
+  const btnCx = base.x + base.w / 2;
+  const rotateBtnTop = base.y + base.h;
+  const deleteBtnTop = base.y;
+
   const anchorId = plots[0].id;
 
   const handleMouseEnter = () => {
@@ -677,8 +682,8 @@ const MultiSelectOverlay: React.FC<{
         onMouseLeave={handleMouseLeave}
         style={{
           position: 'absolute',
-          left: minX + cur.w / 2,
-          top: minY + cur.h,
+          left: btnCx,
+          top: rotateBtnTop,
           transform: 'translate(-50%, -50%)',
           width: 28,
           height: 28,
@@ -720,8 +725,8 @@ const MultiSelectOverlay: React.FC<{
         onMouseLeave={handleMouseLeave}
         style={{
           position: 'absolute',
-          left: minX + cur.w / 2,
-          top: minY,
+          left: btnCx,
+          top: deleteBtnTop,
           transform: 'translate(-50%, -50%)',
           width: 30,
           height: 30,
