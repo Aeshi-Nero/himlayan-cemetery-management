@@ -3943,7 +3943,7 @@ export default function EngineerWorkspacePage() {
                               nextNames[idx] = e.target.value;
                               await applyDeceasedNamesUpdate(activePlot, nextNames, activePlot.capacity || nextNames.length);
                             }}
-                            className="flex-1 bg-white border border-slate-300 rounded-lg px-2 py-1 text-xs text-slate-900 focus:outline-none focus:border-emerald-600 focus:ring-1 focus:ring-emerald-500"
+                            className="min-w-0 flex-1 bg-white border border-slate-300 rounded-lg px-2 py-1 text-xs text-slate-900 focus:outline-none focus:border-emerald-600 focus:ring-1 focus:ring-emerald-500"
                           />
                           {currentDeceased.length > 1 && (
                             <button
