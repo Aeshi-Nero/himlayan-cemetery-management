@@ -3909,9 +3909,11 @@ export default function EngineerWorkspacePage() {
                 </div>
               )}
 
-              {/* Deceased Person Names per Stack Level Editor */}
+              {/* Deceased Person Names per Stack Level Editor (only editable when reserved/occupied/full) */}
               {(() => {
-                const currentDeceased = getPlotDeceasedNames(activePlot);
+                if (activePlot.status === 'available') return null;
+                let currentDeceased = getPlotDeceasedNames(activePlot);
+                currentDeceased = currentDeceased.slice(0, MAX_STACKS);
                 const isApartment = activePlot.lot_type === 'apartment';
                 return (
                   <div className="bg-slate-50 border border-slate-200/90 rounded-xl p-2.5 space-y-2 text-xs">
