@@ -1177,6 +1177,8 @@ export default function EngineerWorkspacePage() {
   const [selectedPlot, setSelectedPlot] = useState<Plot | null>(null);
   const [selectedPlots, setSelectedPlots] = useState<Plot[]>([]);
   const [plotContextMenu, setPlotContextMenu] = useState<{ x: number; y: number; plotId: string } | null>(null);
+  const contextMenuCardRef = useRef<HTMLDivElement | null>(null);
+  const [contextMenuCardSize, setContextMenuCardSize] = useState<{ w: number; h: number } | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [isShiftPressed, setIsShiftPressed] = useState(false);
   const [deleteConfirmState, setDeleteConfirmState] = useState<{
@@ -1222,6 +1224,21 @@ export default function EngineerWorkspacePage() {
       map.off('zoom move zoomend moveend', syncContextMenuPosition);
     };
   }, [map, plotContextMenuPlotId, plots]);
+
+  // Track the real rendered context-menu card size so clamping uses actual dimensions
+  // (the card height changes when e.g. the deceased-names editor appears/disappears).
+  useEffect(() => {
+    const el = contextMenuCardRef.current;
+    if (!el) return;
+    const updateSize = () => {
+      const rect = el.getBoundingClientRect();
+      setContextMenuCardSize({ w: rect.width, h: rect.height });
+    };
+    updateSize();
+    const observer = new ResizeObserver(updateSize);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [plotContextMenu?.plotId, plots]);
 
   const [undoStack, setUndoStack] = useState<Plot[][]>([]);
   const [redoStack, setRedoStack] = useState<Plot[][]>([]);
@@ -3726,14 +3743,17 @@ export default function EngineerWorkspacePage() {
           if (!activePlot) return null;
 
           const isNode = activePlot.lot_type === 'path' || activePlot.lot_type === 'border' || activePlot.lot_type === 'entrance';
-          const cardWidth = isNode ? 240 : 310;
-          const cardHeight = isNode ? 120 : 380;
-          const leftPos = Math.max(10, Math.min(plotContextMenu.x + 12, window.innerWidth - cardWidth - 16));
-          const topPos = Math.max(10, Math.min(plotContextMenu.y - 20, window.innerHeight - cardHeight - 16));
+          const fallbackWidth = isNode ? 240 : 320;
+          const fallbackHeight = isNode ? 120 : 400;
+          const measuredWidth = contextMenuCardSize?.w ?? fallbackWidth;
+          const measuredHeight = contextMenuCardSize?.h ?? fallbackHeight;
+          const leftPos = Math.max(10, Math.min(plotContextMenu.x + 12, window.innerWidth - measuredWidth - 16));
+          const topPos = Math.max(10, Math.min(plotContextMenu.y - 20, window.innerHeight - measuredHeight - 16));
 
           if (isNode) {
             return (
               <div
+                ref={contextMenuCardRef}
                 onMouseDown={(e) => e.stopPropagation()}
                 onMouseUp={(e) => e.stopPropagation()}
                 onClick={(e) => e.stopPropagation()}
@@ -3823,6 +3843,7 @@ export default function EngineerWorkspacePage() {
 
           return (
             <div
+              ref={contextMenuCardRef}
               onMouseDown={(e) => e.stopPropagation()}
               onMouseUp={(e) => e.stopPropagation()}
               onClick={(e) => e.stopPropagation()}
